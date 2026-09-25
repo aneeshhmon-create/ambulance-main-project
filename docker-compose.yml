@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  # ── FastAPI application ──────────────────────────────────────────────────────
+  app:
+    build: .
+    container_name: ambulance_app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app          # live-reload during development
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - ambulance_net
+
+  # ── PostgreSQL + PostGIS ─────────────────────────────────────────────────────
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: ambulance_db
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"             # expose locally for DB clients (pgAdmin, DBeaver)
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ambulance_net
+
+volumes:
+  postgres_data:                # named volume → survives container restarts
+
+networks:
+  ambulance_net:
+    driver: bridge
