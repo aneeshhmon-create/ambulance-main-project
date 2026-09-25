@@ -7,6 +7,8 @@ and guarantees it is closed even if an exception is raised.
 """
 
 from sqlalchemy import create_engine
+from typing import Generator
+
 from sqlalchemy.orm import sessionmaker, Session
 from app.core.config import settings
 
@@ -19,7 +21,7 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-def get_db() -> Session:
+def get_db() -> Generator[Session, None, None]:
     """FastAPI dependency — use with `Depends(get_db)`."""
     db = SessionLocal()
     try:
