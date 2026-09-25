@@ -14,6 +14,5 @@ class Base(DeclarativeBase):
     pass
 
 
-# Re-export model modules here so Alembic autogenerate picks them up.
-# Example (uncomment as you add models):
-# from app.models import hospital, ambulance, patient  # noqa: F401
+# Import all models here so Alembic autogenerate picks them up.
+from app.models import User, Hospital, Ambulance, Incident, IncidentBroadcast  # noqa: E402, F401
