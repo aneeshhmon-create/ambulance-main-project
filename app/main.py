@@ -56,11 +56,10 @@ app.add_middleware(
 
 
 # ── Routers ──────────────────────────────────────────────────────────────────
-# Uncomment as you build each feature:
-# from app.routers import hospitals, ambulances, patients
-# app.include_router(hospitals.router, prefix="/hospitals", tags=["Hospitals"])
-# app.include_router(ambulances.router, prefix="/ambulances", tags=["Ambulances"])
-# app.include_router(patients.router, prefix="/patients", tags=["Patients"])
+from app.routers import hospitals, ambulances
+
+app.include_router(hospitals.router, prefix="/hospitals", tags=["Hospitals"])
+app.include_router(ambulances.router, prefix="/ambulances", tags=["Ambulances"])
 
 
 # ── Health-check ─────────────────────────────────────────────────────────────
