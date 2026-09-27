@@ -14,3 +14,7 @@ alembic==1.20.0
 # Trade-off: uses a different Python API than openai-whisper, but for a plain
 # transcription service this is negligible. Preferred when GPU is not guaranteed.
 faster-whisper==1.1.1
+
+# ── LLM Extraction & Triage ──────────────────────────────────────────────────
+# Google Gemini API official SDK for extracting structured triage data
+google-genai==1.29.0

@@ -1,0 +1,22 @@
+{
+  "stt1.ogg": {
+    "transcript": "ਅਬਗਡਮ ਸਂਭਵੀਚੂ ਨੈਂਚੀਲ ਗੁਰੁਦਰਮਾਯ ਪਰੀਕੇਟੁ ਟੇਂਡੁ ਪੇਰ ਉਣ੍ਟੁ ਉਡਨੇ ਅਮੁਲੁਂਸ ਵੇਨਾਂ",
+    "detected_language": "ml",
+    "duration_seconds": 39.16
+  },
+  "stt2.ogg": {
+    "transcript": "There's been a road accident near the junction. One person is unconscious. Please send an ambulance urgently",
+    "detected_language": "en",
+    "duration_seconds": 25.06
+  },
+  "stt3.ogg": {
+    "transcript": "accident, chest severe pain, two people injured, ambulance fast",
+    "detected_language": "ml",
+    "duration_seconds": 24.36
+  },
+  "stt4.ogg": {
+    "transcript": "മൂനു വെര്ക് പതിക്കേട് ഉരാല്ക് ശ്വാസം മുട്ടലുംട്.",
+    "detected_language": "ml",
+    "duration_seconds": 42.06
+  }
+}

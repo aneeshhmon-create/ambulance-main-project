@@ -1,0 +1,172 @@
+{
+  "stt1.ogg": {
+    "id": 5,
+    "user_id": 1,
+    "location": {
+      "lat": 9.935,
+      "lng": 76.269
+    },
+    "emergency_type": "accident",
+    "severity": "high",
+    "symptoms": [
+      "severe chest injury"
+    ],
+    "victims": 2,
+    "department_needed": "Trauma",
+    "status": "pending",
+    "assigned_hospital_id": null,
+    "assigned_ambulance_id": null,
+    "created_at": "2026-09-27T18:39:22.336507+05:30",
+    "broadcasts": [
+      {
+        "id": 4,
+        "incident_id": 5,
+        "target_type": "hospital",
+        "target_id": 1,
+        "status": "pending",
+        "sent_at": "2026-09-27T18:39:22.336507+05:30",
+        "responded_at": null
+      }
+    ],
+    "assigned_ambulance": null,
+    "transcript": "ਅਬਗਡਮ ਸਂਭਵੀਚੂ ਨੈਂਚੀਲ ਗੁਰੁਦਰਮਾਯ ਪਰੀਕੇਟੁ ਟੇਂਡੁ ਪੇਰ ਉਣ੍ਟੁ ਉਡਨੇ ਅਮੁਲੁਂਸ ਵੇਨਾਂ",
+    "extracted_data": {
+      "emergency_type": "accident",
+      "severity": "high",
+      "symptoms": [
+        "severe chest injury"
+      ],
+      "victims": 2,
+      "department_needed": "Trauma"
+    }
+  },
+  "stt2.ogg": {
+    "id": 6,
+    "user_id": 1,
+    "location": {
+      "lat": 9.935,
+      "lng": 76.269
+    },
+    "emergency_type": "accident",
+    "severity": "critical",
+    "symptoms": [
+      "unconscious",
+      "road accident trauma"
+    ],
+    "victims": 1,
+    "department_needed": "Trauma",
+    "status": "pending",
+    "assigned_hospital_id": null,
+    "assigned_ambulance_id": null,
+    "created_at": "2026-09-27T18:41:07.687059+05:30",
+    "broadcasts": [
+      {
+        "id": 5,
+        "incident_id": 6,
+        "target_type": "hospital",
+        "target_id": 1,
+        "status": "pending",
+        "sent_at": "2026-09-27T18:41:07.687059+05:30",
+        "responded_at": null
+      }
+    ],
+    "assigned_ambulance": null,
+    "transcript": "There's been a road accident near the junction. One person is unconscious. Please send an ambulance urgently",
+    "extracted_data": {
+      "emergency_type": "accident",
+      "severity": "critical",
+      "symptoms": [
+        "unconscious",
+        "road accident trauma"
+      ],
+      "victims": 1,
+      "department_needed": "Trauma"
+    }
+  },
+  "stt3.ogg": {
+    "id": 8,
+    "user_id": 1,
+    "location": {
+      "lat": 9.935,
+      "lng": 76.269
+    },
+    "emergency_type": "accident",
+    "severity": "critical",
+    "symptoms": [
+      "accident",
+      "severe chest pain",
+      "two people injured"
+    ],
+    "victims": 2,
+    "department_needed": "Trauma",
+    "status": "pending",
+    "assigned_hospital_id": null,
+    "assigned_ambulance_id": null,
+    "created_at": "2026-09-27T18:42:49.960767+05:30",
+    "broadcasts": [
+      {
+        "id": 6,
+        "incident_id": 8,
+        "target_type": "hospital",
+        "target_id": 1,
+        "status": "pending",
+        "sent_at": "2026-09-27T18:42:49.960767+05:30",
+        "responded_at": null
+      }
+    ],
+    "assigned_ambulance": null,
+    "transcript": "accident, chest severe pain, two people injured, ambulance fast",
+    "extracted_data": {
+      "emergency_type": "accident",
+      "severity": "critical",
+      "symptoms": [
+        "accident",
+        "severe chest pain",
+        "two people injured"
+      ],
+      "victims": 2,
+      "department_needed": "Trauma"
+    }
+  },
+  "stt4.ogg": {
+    "id": 10,
+    "user_id": 1,
+    "location": {
+      "lat": 9.935,
+      "lng": 76.269
+    },
+    "emergency_type": "respiratory",
+    "severity": "high",
+    "symptoms": [
+      "breathing difficulty"
+    ],
+    "victims": 1,
+    "department_needed": "Pulmonology",
+    "status": "pending",
+    "assigned_hospital_id": null,
+    "assigned_ambulance_id": null,
+    "created_at": "2026-09-27T18:44:48.376386+05:30",
+    "broadcasts": [
+      {
+        "id": 7,
+        "incident_id": 10,
+        "target_type": "hospital",
+        "target_id": 3,
+        "status": "pending",
+        "sent_at": "2026-09-27T18:44:48.376386+05:30",
+        "responded_at": null
+      }
+    ],
+    "assigned_ambulance": null,
+    "transcript": "മൂനു വെര്ക് പതിക്കേട് ഉരാല്ക് ശ്വാസം മുട്ടലുംട്.",
+    "extracted_data": {
+      "emergency_type": "respiratory",
+      "severity": "high",
+      "symptoms": [
+        "breathing difficulty"
+      ],
+      "victims": 1,
+      "department_needed": "Pulmonology"
+    }
+  }
+}

@@ -75,3 +75,5 @@ class IncidentOut(BaseModel):
     # Enriched fields populated by the router
     broadcasts: list[BroadcastOut] = Field(default_factory=list)
     assigned_ambulance: Optional[AmbulanceOut] = None
+    transcript: Optional[str] = None
+    extracted_data: Optional[dict] = None
