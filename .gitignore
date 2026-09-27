@@ -40,3 +40,9 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Machine Learning models (never push large weights to GitHub)
+models/
+*.bin
+*.pt
+*.onnx

@@ -7,3 +7,10 @@ python-multipart==0.0.32
 python-dotenv==1.2.3
 pydantic-settings==2.15.0
 alembic==1.20.0
+
+# ── Speech-to-Text ────────────────────────────────────────────────────────────
+# faster-whisper: CTranslate2-based Whisper implementation.
+# 2-4× faster than openai-whisper on CPU, lower RAM, no PyTorch dependency.
+# Trade-off: uses a different Python API than openai-whisper, but for a plain
+# transcription service this is negligible. Preferred when GPU is not guaranteed.
+faster-whisper==1.1.1

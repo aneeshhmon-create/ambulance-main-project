@@ -26,10 +26,14 @@ from app.db import get_db, engine
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Runs once on startup; teardown code goes after `yield`."""
-    # Enable PostGIS extension if it doesn't exist yet
-    with engine.begin() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
-    print("✅  PostGIS extension ensured.")
+    # Enable PostGIS extension if it exists on the system
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
+        print("[OK] PostGIS extension ensured.")
+    except Exception as exc:
+        print(f"[WARNING] PostGIS extension not installed in local PostgreSQL: {exc}")
+        print("[INFO] Server starting anyway. (If needed for geo-queries, install PostGIS via PostgreSQL Stack Builder).")
     yield
     # Shutdown logic (e.g. close connection pools) would go here
 
@@ -57,10 +61,12 @@ app.add_middleware(
 
 # ── Routers ──────────────────────────────────────────────────────────────────
 from app.routers import hospitals, ambulances, incidents
+from app.routers import test_transcribe  # ← Day-5 only; remove on Day 6
 
 app.include_router(hospitals.router, prefix="/hospitals", tags=["Hospitals"])
 app.include_router(ambulances.router, prefix="/ambulances", tags=["Ambulances"])
 app.include_router(incidents.router, prefix="/incidents", tags=["Incidents"])
+app.include_router(test_transcribe.router, prefix="/test", tags=["Test / Validation"])
 
 
 # ── Health-check ─────────────────────────────────────────────────────────────
