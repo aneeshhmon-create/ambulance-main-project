@@ -56,10 +56,11 @@ app.add_middleware(
 
 
 # ── Routers ──────────────────────────────────────────────────────────────────
-from app.routers import hospitals, ambulances
+from app.routers import hospitals, ambulances, incidents
 
 app.include_router(hospitals.router, prefix="/hospitals", tags=["Hospitals"])
 app.include_router(ambulances.router, prefix="/ambulances", tags=["Ambulances"])
+app.include_router(incidents.router, prefix="/incidents", tags=["Incidents"])
 
 
 # ── Health-check ─────────────────────────────────────────────────────────────

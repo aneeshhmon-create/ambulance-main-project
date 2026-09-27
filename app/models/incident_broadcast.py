@@ -2,22 +2,28 @@
 app/models/incident_broadcast.py
 ──────────────────────────────────
 SQLAlchemy ORM model for the `incident_broadcasts` table.
-Tracks which ambulances were notified about an incident
+
+Tracks which hospitals (or other targets) were notified about an incident
 and what their response was.
+
+Columns
+───────
+target_type  – discriminator: 'hospital' | 'ambulance' (extensible)
+target_id    – FK-free integer; the actual ID in the target table
+status       – pending / accepted / expired / declined
 """
 
 from datetime import datetime
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, DateTime, ForeignKey, func
+from sqlalchemy import String, Integer, DateTime, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.models.incident import Incident
-    from app.models.ambulance import Ambulance
 
 
 class IncidentBroadcast(Base):
@@ -31,15 +37,19 @@ class IncidentBroadcast(Base):
         index=True,
     )
 
-    ambulance_id: Mapped[int] = mapped_column(
-        ForeignKey("ambulances.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
+    # Generic target — avoids coupling to a single FK table.
+    # target_type: 'hospital'
+    # target_id  : hospitals.id
+    target_type: Mapped[str] = mapped_column(
+        String, nullable=False, index=True
+    )
+    target_id: Mapped[int] = mapped_column(
+        Integer, nullable=False, index=True
     )
 
-    # status: sent / accepted / declined / ignored
+    # status: pending / accepted / expired / declined
     status: Mapped[str] = mapped_column(
-        String, default="sent", server_default="sent", nullable=False, index=True
+        String, default="pending", server_default="pending", nullable=False, index=True
     )
 
     sent_at: Mapped[datetime] = mapped_column(
@@ -56,7 +66,4 @@ class IncidentBroadcast(Base):
     # Relationships
     incident: Mapped["Incident"] = relationship(
         "Incident", back_populates="broadcasts"
-    )
-    ambulance: Mapped["Ambulance"] = relationship(
-        "Ambulance", back_populates="broadcasts"
     )

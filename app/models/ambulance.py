@@ -15,7 +15,6 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.models.incident import Incident
-    from app.models.incident_broadcast import IncidentBroadcast
 
 
 class Ambulance(Base):
@@ -40,7 +39,4 @@ class Ambulance(Base):
         "Incident",
         foreign_keys="Incident.assigned_ambulance_id",
         back_populates="assigned_ambulance",
-    )
-    broadcasts: Mapped[list["IncidentBroadcast"]] = relationship(
-        "IncidentBroadcast", back_populates="ambulance"
     )
