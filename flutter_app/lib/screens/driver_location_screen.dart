@@ -106,7 +106,9 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
           .patch(
             uri,
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'lat': lat, 'lng': lng}),
+            body: jsonEncode({
+              'location': {'lat': lat, 'lng': lng},
+            }),
           )
           .timeout(const Duration(seconds: 8));
 
