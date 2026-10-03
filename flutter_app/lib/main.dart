@@ -1,4 +1,6 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
+
+import 'screens/driver_location_screen.dart';
 
 void main() {
   runApp(const AmbulanceApp());
@@ -10,20 +12,16 @@ class AmbulanceApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Ambulance',
+      title: 'Ambulance Driver',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.red,
-          brightness: Brightness.light,
+          brightness: Brightness.dark,
         ),
         useMaterial3: true,
       ),
-      home: const Scaffold(
-        body: Center(
-          child: Text('Ambulance App'),
-        ),
-      ),
+      home: const DriverLocationScreen(),
     );
   }
 }
