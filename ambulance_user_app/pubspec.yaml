@@ -36,7 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   http: ^1.6.0
   record: ^6.2.1
-  permission_handler: ^13.0.2
+  permission_handler: 11.3.1
   geolocator: ^14.1.1
   shared_preferences: ^2.5.5
   path_provider: ^2.1.6
