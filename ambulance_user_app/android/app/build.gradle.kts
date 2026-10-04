@@ -24,7 +24,7 @@ android {
         applicationId = "com.team19.ambulance_user_app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = 23  // Required by permission_handler 13+ and geolocator 14+
+        minSdk = flutter.minSdkVersion  // Required by permission_handler 13+ and geolocator 14+
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

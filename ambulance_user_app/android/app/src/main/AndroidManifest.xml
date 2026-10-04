@@ -13,12 +13,12 @@
     <!-- Coarse location fallback (network-based) -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
+    <!-- Allow plain HTTP to our dev FastAPI server (LAN, no TLS yet).
+         IMPORTANT: remove this before production release and switch to HTTPS. -->
     <application
         android:label="ambulance_user_app"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        <!-- Allow plain HTTP to our dev FastAPI server (LAN, no TLS yet).
-             IMPORTANT: remove this before production release and switch to HTTPS. -->
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
