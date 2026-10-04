@@ -17,6 +17,10 @@ from app.schemas.ambulance import (
     AmbulanceLocationUpdate,
     AmbulanceNearestOut,
 )
+from app.schemas.user import (
+    UserCreate,
+    UserOut,
+)
 
 __all__ = [
     "HospitalCreate",
@@ -27,4 +31,6 @@ __all__ = [
     "AmbulanceOut",
     "AmbulanceLocationUpdate",
     "AmbulanceNearestOut",
+    "UserCreate",
+    "UserOut",
 ]
