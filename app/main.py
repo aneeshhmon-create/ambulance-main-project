@@ -30,10 +30,10 @@ async def lifespan(app: FastAPI):
     try:
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
-        print("[OK] PostGIS extension ensured.")
+            conn.execute(text("SELECT setval('users_id_seq', (SELECT COALESCE(MAX(id), 1) FROM users));"))
+        print("[OK] PostGIS extension and users sequence ensured.")
     except Exception as exc:
-        print(f"[WARNING] PostGIS extension not installed in local PostgreSQL: {exc}")
-        print("[INFO] Server starting anyway. (If needed for geo-queries, install PostGIS via PostgreSQL Stack Builder).")
+        print(f"[WARNING] Startup DB setup note: {exc}")
     yield
     # Shutdown logic (e.g. close connection pools) would go here
 
@@ -60,12 +60,13 @@ app.add_middleware(
 
 
 # ── Routers ──────────────────────────────────────────────────────────────────
-from app.routers import hospitals, ambulances, incidents
+from app.routers import hospitals, ambulances, incidents, users
 from app.routers import test_transcribe  # ← Day-5 only; remove on Day 6
 
 app.include_router(hospitals.router, prefix="/hospitals", tags=["Hospitals"])
 app.include_router(ambulances.router, prefix="/ambulances", tags=["Ambulances"])
 app.include_router(incidents.router, prefix="/incidents", tags=["Incidents"])
+app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(test_transcribe.router, prefix="/test", tags=["Test / Validation"])
 
 
