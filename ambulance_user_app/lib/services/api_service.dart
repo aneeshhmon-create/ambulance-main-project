@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import '../config/api_config.dart';
+import '../models/incident.dart';
 import '../models/user.dart';
 
 /// Thrown by [ApiService] when any request fails.
@@ -148,5 +149,83 @@ class ApiService {
       return User.fromJson(data);
     }
     throw const ApiException('Invalid response format received from server.');
+  }
+
+  /// Submits an incident report via multipart POST /incidents.
+  ///
+  /// Uses a 120-second timeout override to allow STT transcription (Whisper)
+  /// and LLM triage extraction (Gemini) to complete on CPU.
+  Future<Incident> submitIncident({
+    required String audioPath,
+    int? userId,
+    required double lat,
+    required double lng,
+  }) async {
+    final file = File(audioPath);
+    try {
+      if (!await file.exists() || await file.length() == 0) {
+        throw const ApiException('Audio recording is missing or empty.');
+      }
+    } on FileSystemException {
+      throw const ApiException('Audio recording is missing or empty.');
+    }
+
+    final uri = Uri.parse('${ApiConfig.baseUrl}/incidents');
+    final request = http.MultipartRequest('POST', uri);
+
+    request.fields['lat'] = lat.toString();
+    request.fields['lng'] = lng.toString();
+    if (userId != null) {
+      request.fields['user_id'] = userId.toString();
+    }
+
+    final multipartFile = await http.MultipartFile.fromPath(
+      'audio_file',
+      audioPath,
+    );
+    request.files.add(multipartFile);
+
+    try {
+      final streamedResponse = await _client.send(request).timeout(
+        const Duration(seconds: 120),
+      );
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw _parseErrorResponse(response);
+      }
+
+      try {
+        final data = jsonDecode(response.body);
+        if (data is Map<String, dynamic>) {
+          return Incident.fromJson(data);
+        }
+        throw const ApiException('Invalid response format received from server.');
+      } on FormatException {
+        throw const ApiException(
+          'Unexpected response from server. '
+          'The data could not be understood.',
+        );
+      }
+    } on ApiException {
+      rethrow;
+    } on SocketException {
+      throw const ApiException(
+        'No network connection. '
+        'Check your Wi-Fi and try again.',
+      );
+    } on http.ClientException catch (e) {
+      throw ApiException(
+        'Network error: ${e.message}. '
+        'Check your connection and try again.',
+      );
+    } on TimeoutException {
+      throw const ApiException(
+        'Request timed out. '
+        'The server took too long to process the report.',
+      );
+    } on Exception catch (e) {
+      throw ApiException('Unexpected error: $e');
+    }
   }
 }

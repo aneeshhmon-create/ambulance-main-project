@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 
+import 'models/incident.dart';
 import 'models/user.dart';
 import 'screens/home_screen.dart';
 import 'screens/record_screen.dart';
 import 'screens/register_screen.dart';
+import 'screens/submit_screen.dart';
 import 'services/user_storage.dart';
 
 void main() {
@@ -30,7 +32,8 @@ class AmbulanceUserApp extends StatelessWidget {
       routes: {
         '/register': (context) => const RegisterScreen(),
         '/report': (context) => const RecordScreen(),
-        '/submit': (context) => const SubmitPlaceholderScreen(),
+        '/submit': (context) => const SubmitScreen(),
+        '/result': (context) => const ResultPlaceholderScreen(),
         // Shared-friendly routes for Person C:
         // '/tracking': (context) => const TrackingScreen(),
         // '/driver_location': (context) => const DriverLocationScreen(),
@@ -108,42 +111,118 @@ class _AppRootState extends State<AppRoot> {
   }
 }
 
-/// Placeholder for the Day 4 submission screen.
+/// Placeholder screen for Day 5 polished result & tracking UI.
 ///
-/// Receives the recorded file path as a route argument.
-class SubmitPlaceholderScreen extends StatelessWidget {
-  const SubmitPlaceholderScreen({super.key});
+/// Displays the parsed response summary as plain text.
+class ResultPlaceholderScreen extends StatelessWidget {
+  const ResultPlaceholderScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final path =
-        ModalRoute.of(context)?.settings.arguments as String? ?? '(no path)';
+    final incident =
+        ModalRoute.of(context)?.settings.arguments as Incident?;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Submit Report'),
+        title: const Text('Dispatch Summary'),
         backgroundColor: Colors.red[700],
         foregroundColor: Colors.white,
+        automaticallyImplyLeading: false,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Submit screen — coming Day 4',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 24),
-              Text(
-                'File: $path',
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: incident == null
+              ? const Center(child: Text('No incident data received.'))
+              : SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.green[50],
+                          border: Border.all(color: Colors.green),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.check_circle, color: Colors.green, size: 28),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'Incident #${incident.id} created (${incident.status})',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                  color: Colors.green,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      Text(
+                        'Voice Transcript:',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        incident.transcript?.isNotEmpty == true
+                            ? incident.transcript!
+                            : '(no transcript available)',
+                        style: const TextStyle(fontStyle: FontStyle.italic),
+                      ),
+                      const Divider(height: 32),
+                      _buildInfoRow('Emergency Type', incident.emergencyType ?? 'unspecified'),
+                      _buildInfoRow('Severity', incident.severity ?? 'unspecified'),
+                      _buildInfoRow('Department Needed', incident.departmentNeeded ?? 'General Medicine'),
+                      _buildInfoRow('Victims', '${incident.victims}'),
+                      _buildInfoRow('Symptoms', incident.symptoms.isNotEmpty ? incident.symptoms.join(', ') : 'None listed'),
+                      _buildInfoRow('Hospitals Broadcast', '${incident.broadcasts.length} nearby hospitals'),
+                      if (incident.assignedAmbulance != null)
+                        _buildInfoRow(
+                          'Assigned Ambulance',
+                          '${incident.assignedAmbulance!.driverName} (${incident.assignedAmbulance!.driverPhone})',
+                        ),
+                      const SizedBox(height: 32),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton(
+                          onPressed: () {
+                            Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+                          },
+                          child: const Text('Back to Home'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 150,
+            child: Text(
+              '$label:',
+              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
+            ),
+          ),
+          Expanded(
+            child: Text(value, style: const TextStyle(color: Colors.black87)),
+          ),
+        ],
       ),
     );
   }
