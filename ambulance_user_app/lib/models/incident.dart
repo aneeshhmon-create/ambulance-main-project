@@ -118,6 +118,44 @@ class Incident {
   final String? transcript;
   final Map<String, dynamic>? extractedData;
 
+  Incident copyWith({
+    int? id,
+    int? userId,
+    IncidentLocation? location,
+    String? emergencyType,
+    String? severity,
+    List<String>? symptoms,
+    int? victims,
+    String? departmentNeeded,
+    String? status,
+    int? assignedHospitalId,
+    int? assignedAmbulanceId,
+    DateTime? createdAt,
+    List<Broadcast>? broadcasts,
+    AssignedAmbulance? assignedAmbulance,
+    String? transcript,
+    Map<String, dynamic>? extractedData,
+  }) {
+    return Incident(
+      id: id ?? this.id,
+      userId: userId ?? this.userId,
+      location: location ?? this.location,
+      emergencyType: emergencyType ?? this.emergencyType,
+      severity: severity ?? this.severity,
+      symptoms: symptoms ?? this.symptoms,
+      victims: victims ?? this.victims,
+      departmentNeeded: departmentNeeded ?? this.departmentNeeded,
+      status: status ?? this.status,
+      assignedHospitalId: assignedHospitalId ?? this.assignedHospitalId,
+      assignedAmbulanceId: assignedAmbulanceId ?? this.assignedAmbulanceId,
+      createdAt: createdAt ?? this.createdAt,
+      broadcasts: broadcasts ?? this.broadcasts,
+      assignedAmbulance: assignedAmbulance ?? this.assignedAmbulance,
+      transcript: transcript ?? this.transcript,
+      extractedData: extractedData ?? this.extractedData,
+    );
+  }
+
   /// Defensive JSON deserialization. Fallback extraction and missing fields
   /// never cause a parse crash.
   factory Incident.fromJson(Map<String, dynamic> json) {

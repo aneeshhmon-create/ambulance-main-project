@@ -17,4 +17,18 @@ class ApiConfig {
     'API_BASE_URL',
     defaultValue: 'http://192.168.1.10:8000',
   );
+
+  /// Demo fallback latitude (near seeded Kochi hospital cluster).
+  /// Override with --dart-define=DEMO_LAT=...
+  static double get demoLat {
+    const val = String.fromEnvironment('DEMO_LAT', defaultValue: '9.9390');
+    return double.tryParse(val) ?? 9.9390;
+  }
+
+  /// Demo fallback longitude (near seeded Kochi hospital cluster).
+  /// Override with --dart-define=DEMO_LNG=...
+  static double get demoLng {
+    const val = String.fromEnvironment('DEMO_LNG', defaultValue: '76.2700');
+    return double.tryParse(val) ?? 76.2700;
+  }
 }

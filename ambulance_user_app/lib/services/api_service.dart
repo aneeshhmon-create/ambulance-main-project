@@ -228,4 +228,35 @@ class ApiService {
       throw ApiException('Unexpected error: $e');
     }
   }
+
+  /// Submits a manual incident report via JSON POST /incidents/manual.
+  ///
+  /// Used for fast demo fallback or testing without audio recording.
+  Future<Incident> submitManualIncident({
+    required double lat,
+    required double lng,
+    int? userId,
+    String? emergencyType,
+    String? severity,
+    List<String>? symptoms,
+    int victims = 1,
+    String? departmentNeeded,
+  }) async {
+    final body = <String, dynamic>{
+      'lat': lat,
+      'lng': lng,
+      'symptoms': symptoms ?? <String>[],
+      'victims': victims,
+    };
+    if (userId != null) body['user_id'] = userId;
+    if (emergencyType != null) body['emergency_type'] = emergencyType;
+    if (severity != null) body['severity'] = severity;
+    if (departmentNeeded != null) body['department_needed'] = departmentNeeded;
+
+    final data = await _post('/incidents/manual', body);
+    if (data is Map<String, dynamic>) {
+      return Incident.fromJson(data);
+    }
+    throw const ApiException('Invalid response format received from server.');
+  }
 }

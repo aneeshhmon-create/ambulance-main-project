@@ -1,18 +1,44 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'config/routes.dart';
 import 'models/user.dart';
+import 'screens/error_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/record_screen.dart';
 import 'screens/register_screen.dart';
 import 'screens/result_screen.dart';
 import 'screens/submit_screen.dart';
 import 'screens/tracking_placeholder_screen.dart';
+import 'services/cleanup_service.dart';
 import 'services/user_storage.dart';
 
 void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(const AmbulanceUserApp());
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+
+    // 1. Clean up stale report_*.m4a files (>24h old) in background
+    unawaited(const CleanupService().cleanupStaleAudioFiles());
+
+    // 2. Global framework error handler
+    FlutterError.onError = (FlutterErrorDetails details) {
+      FlutterError.presentError(details);
+      debugPrint(
+        '>>> [FlutterError] Caught framework error: '
+        '${details.exceptionAsString()}\n${details.stack}',
+      );
+    };
+
+    // 3. Global friendly error page instead of red screen of death
+    ErrorWidget.builder = (FlutterErrorDetails details) {
+      return GlobalErrorScreen(errorDetails: details);
+    };
+
+    runApp(const AmbulanceUserApp());
+  }, (error, stack) {
+    debugPrint('>>> [ZonedGuarded] Uncaught asynchronous error: $error\n$stack');
+  });
 }
 
 /// Root widget for the Ambulance User App.

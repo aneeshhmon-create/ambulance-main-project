@@ -1,22 +1,83 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../config/api_config.dart';
+import '../config/routes.dart';
 import '../models/user.dart';
 import '../services/api_service.dart';
+import '../services/location_service.dart';
 import '../services/user_storage.dart';
 
-/// Home screen — main patient dashboard.
+enum _ServerHealthStatus { checking, connected, unreachable }
+
+class DemoPreset {
+  const DemoPreset({
+    required this.label,
+    required this.emergencyType,
+    required this.departmentNeeded,
+    required this.severity,
+    required this.victims,
+    required this.symptoms,
+  });
+
+  final String label;
+  final String emergencyType;
+  final String departmentNeeded;
+  final String severity;
+  final int victims;
+  final List<String> symptoms;
+}
+
+const List<DemoPreset> _demoPresets = [
+  DemoPreset(
+    label: 'Road accident - critical',
+    emergencyType: 'Road accident',
+    departmentNeeded: 'Trauma',
+    severity: 'critical',
+    victims: 2,
+    symptoms: ['Severe bleeding', 'Head trauma'],
+  ),
+  DemoPreset(
+    label: 'Chest pain - cardiac',
+    emergencyType: 'Chest pain',
+    departmentNeeded: 'Cardiology',
+    severity: 'high',
+    victims: 1,
+    symptoms: ['Chest pressure', 'Shortness of breath'],
+  ),
+  DemoPreset(
+    label: 'Child high fever - paediatric',
+    emergencyType: 'Child high fever',
+    departmentNeeded: 'Pediatrics',
+    severity: 'medium',
+    victims: 1,
+    symptoms: ['High fever', 'Convulsions'],
+  ),
+  DemoPreset(
+    label: 'Mild fever - general',
+    emergencyType: 'Mild fever',
+    departmentNeeded: 'General Medicine',
+    severity: 'low',
+    victims: 1,
+    symptoms: ['Mild fever', 'Headache'],
+  ),
+];
+
+/// Home screen — main patient dashboard with server indicator and demo mode.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
     this.user,
     this.apiService,
     this.userStorage,
+    this.locationService,
   });
 
   final User? user;
   final ApiService? apiService;
   final UserStorage? userStorage;
+  final LocationService? locationService;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -25,20 +86,29 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   late final ApiService _api;
   late final UserStorage _storage;
+  late final LocationService _locationService;
 
   User? _currentUser;
   bool _isLoadingUser = true;
 
-  // Tri-state for Developer connection check widget
-  _ConnectionState _connectionState = _ConnectionState.idle;
-  String _connectionMessage = '';
+  // Server health indicator
+  _ServerHealthStatus _serverStatus = _ServerHealthStatus.checking;
+
+  // Demo mode state (in-memory only, never persisted)
+  bool _isDemoMode = false;
+  int _titleTapCount = 0;
+  DateTime? _lastTitleTap;
+  bool _isSubmittingPreset = false;
 
   @override
   void initState() {
     super.initState();
     _api = widget.apiService ?? ApiService();
     _storage = widget.userStorage ?? UserStorage();
+    _locationService = widget.locationService ?? const GeolocatorLocationService();
+
     _initUser();
+    _checkServerStatus();
   }
 
   Future<void> _initUser() async {
@@ -59,39 +129,113 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _switchUser() async {
-    await _storage.clearUser();
-    if (!mounted) return;
-    Navigator.of(context).pushNamedAndRemoveUntil('/register', (route) => false);
-  }
-
-  Future<void> _testConnection() async {
-    setState(() {
-      _connectionState = _ConnectionState.loading;
-      _connectionMessage = '';
-    });
-
+  Future<void> _checkServerStatus() async {
+    setState(() => _serverStatus = _ServerHealthStatus.checking);
     try {
-      final result = await _api.checkHealth();
+      await _api.checkHealth().timeout(const Duration(seconds: 5));
       if (mounted) {
-        setState(() {
-          _connectionState = _ConnectionState.success;
-          _connectionMessage = result.toString();
-        });
-      }
-    } on ApiException catch (e) {
-      if (mounted) {
-        setState(() {
-          _connectionState = _ConnectionState.failure;
-          _connectionMessage = e.message;
-        });
+        setState(() => _serverStatus = _ServerHealthStatus.connected);
       }
     } catch (_) {
       if (mounted) {
-        setState(() {
-          _connectionState = _ConnectionState.failure;
-          _connectionMessage = 'An unexpected error occurred. Please retry.';
-        });
+        setState(() => _serverStatus = _ServerHealthStatus.unreachable);
+      }
+    }
+  }
+
+  void _onTitleTapped() {
+    final now = DateTime.now();
+    if (_lastTitleTap == null || now.difference(_lastTitleTap!) > const Duration(seconds: 2)) {
+      _titleTapCount = 1;
+    } else {
+      _titleTapCount++;
+    }
+    _lastTitleTap = now;
+
+    if (_titleTapCount >= 5) {
+      _titleTapCount = 0;
+      setState(() {
+        _isDemoMode = !_isDemoMode;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_isDemoMode ? 'DEMO MODE ENABLED' : 'Demo mode disabled'),
+          duration: const Duration(seconds: 2),
+          backgroundColor: _isDemoMode ? Colors.orange[900] : Colors.grey[800],
+        ),
+      );
+    }
+  }
+
+  Future<void> _switchUser() async {
+    await _storage.clearUser();
+    if (!mounted) return;
+    Navigator.of(context).pushNamedAndRemoveUntil(AppRoutes.register, (route) => false);
+  }
+
+  Future<void> _submitPreset(DemoPreset preset) async {
+    if (_isSubmittingPreset) return;
+    setState(() => _isSubmittingPreset = true);
+
+    try {
+      double lat;
+      double lng;
+      bool usedFallbackLocation = false;
+
+      try {
+        final loc = await _locationService.getCurrentLocation();
+        lat = loc.latitude;
+        lng = loc.longitude;
+      } catch (e) {
+        lat = ApiConfig.demoLat;
+        lng = ApiConfig.demoLng;
+        usedFallbackLocation = true;
+      }
+
+      if (usedFallbackLocation && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('GPS unavailable — using demo coordinates ($lat, $lng)'),
+            duration: const Duration(seconds: 3),
+            backgroundColor: Colors.amber[900],
+          ),
+        );
+      }
+
+      final incident = await _api.submitManualIncident(
+        lat: lat,
+        lng: lng,
+        userId: _currentUser?.id,
+        emergencyType: preset.emergencyType,
+        severity: preset.severity,
+        symptoms: preset.symptoms,
+        victims: preset.victims,
+        departmentNeeded: preset.departmentNeeded,
+      );
+
+      final displayIncident = incident.copyWith(transcript: preset.label);
+
+      if (mounted) {
+        Navigator.of(context).pushNamed(
+          AppRoutes.result,
+          arguments: displayIncident,
+        );
+      }
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Preset dispatch failed: ${e.message}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSubmittingPreset = false);
       }
     }
   }
@@ -109,7 +253,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Emergency Ambulance'),
+        title: GestureDetector(
+          onTap: _onTitleTapped,
+          child: const Text('Emergency Ambulance'),
+        ),
         backgroundColor: Colors.red[700],
         foregroundColor: Colors.white,
       ),
@@ -119,13 +266,21 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Greeting section
-              Text(
-                'Hi, $displayName',
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
+              // ── Top Bar: Server indicator & greeting ───────────────────────
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Hi, $displayName',
+                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
                     ),
+                  ),
+                  _buildServerStatusIndicator(),
+                ],
               ),
               if (displayPhone.isNotEmpty) ...[
                 const SizedBox(height: 4),
@@ -136,9 +291,14 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                 ),
               ],
-              const SizedBox(height: 32),
+              const SizedBox(height: 20),
 
-              // Large Red "Report Emergency" button
+              // ── DEMO MODE Banner ───────────────────────────────────────────
+              if (_isDemoMode) _buildDemoModeBanner(),
+
+              const SizedBox(height: 16),
+
+              // ── Report Emergency Card ──────────────────────────────────────
               Card(
                 elevation: 4,
                 shape: RoundedRectangleBorder(
@@ -176,7 +336,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         height: 56,
                         child: ElevatedButton.icon(
                           onPressed: () {
-                            Navigator.of(context).pushNamed('/report');
+                            Navigator.of(context).pushNamed(AppRoutes.report);
                           },
                           icon: const Icon(Icons.warning_amber_rounded, size: 28),
                           label: const Text(
@@ -201,9 +361,16 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+
+              // ── Quick Demo Reports Panel ───────────────────────────────────
+              if (_isDemoMode) ...[
+                const SizedBox(height: 24),
+                _buildDemoPanel(),
+              ],
+
               const SizedBox(height: 16),
 
-              // Switch user button
+              // ── Switch user button ─────────────────────────────────────────
               Center(
                 child: TextButton.icon(
                   onPressed: _switchUser,
@@ -214,51 +381,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 32),
-
-              // Collapsed Developer section
-              ExpansionTile(
-                title: Text(
-                  'Developer Options (Backend Check)',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey[700],
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                tilePadding: EdgeInsets.zero,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          'Backend: ${ApiConfig.baseUrl}',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: Colors.grey[600],
-                              ),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 16),
-                        ElevatedButton(
-                          onPressed: _connectionState == _ConnectionState.loading
-                              ? null
-                              : _testConnection,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.grey[800],
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                          ),
-                          child: const Text('Test Connection'),
-                        ),
-                        const SizedBox(height: 16),
-                        _buildStatusWidget(),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
             ],
           ),
         ),
@@ -266,75 +388,164 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildStatusWidget() {
-    switch (_connectionState) {
-      case _ConnectionState.idle:
-        return const SizedBox.shrink();
+  Widget _buildServerStatusIndicator() {
+    final (dotColor, label) = switch (_serverStatus) {
+      _ServerHealthStatus.connected => (Colors.green, 'Server connected'),
+      _ServerHealthStatus.unreachable => (Colors.red, 'Server unreachable'),
+      _ServerHealthStatus.checking => (Colors.amber, 'Checking...'),
+    };
 
-      case _ConnectionState.loading:
-        return const Center(child: CircularProgressIndicator());
+    return InkWell(
+      key: const ValueKey('server_status_indicator'),
+      onTap: _checkServerStatus,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.grey[100],
+          border: Border.all(color: Colors.grey.shade300),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: dotColor,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey[800],
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
-      case _ConnectionState.success:
-        return Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Colors.green[50],
-            border: Border.all(color: Colors.green),
-            borderRadius: BorderRadius.circular(8),
+  Widget _buildDemoModeBanner() {
+    return Container(
+      key: const ValueKey('demo_mode_banner'),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.orange[50],
+        border: Border.all(color: Colors.orange.shade400, width: 1.5),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.warning_amber_rounded, color: Colors.orange[900], size: 24),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'DEMO MODE ACTIVE',
+                  style: TextStyle(
+                    color: Colors.orange[900],
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                Text(
+                  'Using simulated reports & safety net fallback.',
+                  style: TextStyle(color: Colors.orange[950], fontSize: 12),
+                ),
+              ],
+            ),
           ),
-          child: Column(
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDemoPanel() {
+    return Container(
+      key: const ValueKey('demo_reports_panel'),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              const Icon(Icons.check_circle, color: Colors.green, size: 28),
-              const SizedBox(height: 4),
+              Icon(Icons.bolt_rounded, color: Colors.amber[800], size: 20),
+              const SizedBox(width: 6),
               const Text(
-                'Connected',
+                'Quick demo reports',
                 style: TextStyle(
-                  color: Colors.green,
-                  fontWeight: FontWeight.bold,
                   fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _connectionMessage,
-                style: const TextStyle(color: Colors.black87, fontSize: 12),
-                textAlign: TextAlign.center,
               ),
             ],
           ),
-        );
-
-      case _ConnectionState.failure:
-        return Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Colors.red[50],
-            border: Border.all(color: Colors.red),
-            borderRadius: BorderRadius.circular(8),
+          const SizedBox(height: 4),
+          Text(
+            'Instant dispatch presets (bypasses microphone)',
+            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
           ),
-          child: Column(
-            children: [
-              const Icon(Icons.error_outline, color: Colors.red, size: 28),
-              const SizedBox(height: 4),
-              Text(
-                _connectionMessage,
-                style: const TextStyle(color: Colors.red, fontSize: 13),
-                textAlign: TextAlign.center,
+          const SizedBox(height: 16),
+          if (_isSubmittingPreset)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16.0),
+                child: CircularProgressIndicator(color: Colors.red),
               ),
-              const SizedBox(height: 8),
-              OutlinedButton(
-                onPressed: _testConnection,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.red,
-                  side: const BorderSide(color: Colors.red),
+            )
+          else
+            ..._demoPresets.map((preset) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10.0),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _submitPreset(preset),
+                    icon: Icon(
+                      Icons.play_circle_outline_rounded,
+                      size: 20,
+                      color: Colors.red[700],
+                    ),
+                    label: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        preset.label,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.black87,
+                      side: BorderSide(color: Colors.grey.shade300),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
                 ),
-                child: const Text('Retry'),
-              ),
-            ],
-          ),
-        );
-    }
+              );
+            }),
+        ],
+      ),
+    );
   }
 }
-
-enum _ConnectionState { idle, loading, success, failure }
