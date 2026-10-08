@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'models/user.dart';
 import 'screens/home_screen.dart';
+import 'screens/record_screen.dart';
 import 'screens/register_screen.dart';
 import 'services/user_storage.dart';
 
@@ -28,7 +29,8 @@ class AmbulanceUserApp extends StatelessWidget {
       home: AppRoot(userStorage: userStorage),
       routes: {
         '/register': (context) => const RegisterScreen(),
-        '/report': (context) => const ReportPlaceholderScreen(),
+        '/report': (context) => const RecordScreen(),
+        '/submit': (context) => const SubmitPlaceholderScreen(),
         // Shared-friendly routes for Person C:
         // '/tracking': (context) => const TrackingScreen(),
         // '/driver_location': (context) => const DriverLocationScreen(),
@@ -106,26 +108,41 @@ class _AppRootState extends State<AppRoot> {
   }
 }
 
-/// Placeholder screen for Day 3 audio recording & incident reporting.
-class ReportPlaceholderScreen extends StatelessWidget {
-  const ReportPlaceholderScreen({super.key});
+/// Placeholder for the Day 4 submission screen.
+///
+/// Receives the recorded file path as a route argument.
+class SubmitPlaceholderScreen extends StatelessWidget {
+  const SubmitPlaceholderScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final path =
+        ModalRoute.of(context)?.settings.arguments as String? ?? '(no path)';
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Report Emergency'),
+        title: const Text('Submit Report'),
         backgroundColor: Colors.red[700],
         foregroundColor: Colors.white,
       ),
-      body: const Center(
-        child: Text(
-          'Recording screen - coming Day 3',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w500,
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Submit screen — coming Day 4',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'File: $path',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+            ],
           ),
-          textAlign: TextAlign.center,
         ),
       ),
     );
