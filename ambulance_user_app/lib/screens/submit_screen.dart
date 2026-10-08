@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../config/routes.dart';
 import '../controllers/submit_controller.dart';
 import '../services/api_service.dart';
 import '../services/location_service.dart';
@@ -83,7 +84,7 @@ class _SubmitScreenState extends State<SubmitScreen> {
 
     if (_controller.state == SubmitState.success && _controller.incident != null) {
       Navigator.of(context).pushReplacementNamed(
-        '/result',
+        AppRoutes.result,
         arguments: _controller.incident,
       );
     }
