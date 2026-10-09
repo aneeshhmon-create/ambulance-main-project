@@ -1,3 +1,4 @@
+
 import 'package:flutter/material.dart';
 import 'screens/test_harness_screen.dart';
 
@@ -11,7 +12,7 @@ class AmbulanceApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Ambulance',
+      title: 'Ambulance App',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(

@@ -1,4 +1,4 @@
-﻿name: ambulance_app
+name: ambulance_app
 description: Patient-facing ambulance allocation app.
 publish_to: "none"
 
@@ -12,6 +12,7 @@ dependencies:
     sdk: flutter
   http: ^1.2.1
   cupertino_icons: ^1.0.6
+  geolocator: ^14.1.1
 
 dev_dependencies:
   flutter_test:
