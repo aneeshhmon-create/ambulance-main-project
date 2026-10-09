@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'screens/test_harness_screen.dart';
 
 void main() {
   runApp(const AmbulanceApp());
@@ -18,12 +19,9 @@ class AmbulanceApp extends StatelessWidget {
           brightness: Brightness.light,
         ),
         useMaterial3: true,
+        cardTheme: const CardThemeData(elevation: 2),
       ),
-      home: const Scaffold(
-        body: Center(
-          child: Text('Ambulance App'),
-        ),
-      ),
+      home: const TestHarnessScreen(),
     );
   }
 }
