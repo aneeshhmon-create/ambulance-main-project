@@ -1,14 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
 
-// ---------------------------------------------------------------------------
-// Change this to your backend's base URL (no trailing slash).
-// ---------------------------------------------------------------------------
-const String _kBaseUrl = 'http://localhost:8000';
+import '../services/ambulance_service.dart';
 
 // How often to push the location (seconds).
 const int _kIntervalSeconds = 5;
@@ -99,29 +94,16 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
 
   Future<void> _sendLocation(
       String ambulanceId, double lat, double lng) async {
-    final uri =
-        Uri.parse('$_kBaseUrl/ambulances/$ambulanceId/location');
     try {
-      final response = await http
-          .patch(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'location': {'lat': lat, 'lng': lng},
-            }),
-          )
-          .timeout(const Duration(seconds: 8));
-
-      if (response.statusCode >= 200 && response.statusCode < 300) {
-        if (_status == _SharingStatus.connectionError) {
-          _setStatus(_SharingStatus.sharing);
-        }
-        setState(() => _lastError = null);
-      } else {
-        setState(
-            () => _lastError = 'Server responded ${response.statusCode}');
-        _setStatus(_SharingStatus.connectionError);
+      await AmbulanceService.updateLocation(
+        ambulanceId: ambulanceId,
+        lat: lat,
+        lng: lng,
+      );
+      if (_status == _SharingStatus.connectionError) {
+        _setStatus(_SharingStatus.sharing);
       }
+      setState(() => _lastError = null);
     } catch (e) {
       setState(() => _lastError = e.toString());
       _setStatus(_SharingStatus.connectionError);
@@ -213,9 +195,9 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
       duration: const Duration(milliseconds: 300),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(30),
-        border: Border.all(color: color.withOpacity(0.35), width: 1.2),
+        border: Border.all(color: color.withValues(alpha: 0.35), width: 1.2),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -251,8 +233,8 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: value != null
-                ? const Color(0xFF3B82F6).withOpacity(0.4)
-                : Colors.white.withOpacity(0.06),
+                ? const Color(0xFF3B82F6).withValues(alpha: 0.4)
+                : Colors.white.withValues(alpha: 0.06),
           ),
         ),
         child: Column(
@@ -261,7 +243,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
             Text(
               label,
               style: TextStyle(
-                color: Colors.white.withOpacity(0.5),
+                color: Colors.white.withValues(alpha: 0.5),
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 1.2,
@@ -305,7 +287,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFEF4444).withOpacity(0.15),
+                      color: const Color(0xFFEF4444).withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: const Icon(
@@ -330,7 +312,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
                       Text(
                         'Live GPS sharing',
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.45),
+                          color: Colors.white.withValues(alpha: 0.45),
                           fontSize: 13,
                         ),
                       ),
@@ -344,7 +326,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
               Text(
                 'AMBULANCE ID',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.45),
+                  color: Colors.white.withValues(alpha: 0.45),
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 1.4,
@@ -358,7 +340,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
                 decoration: InputDecoration(
                   hintText: 'e.g. amb-001',
                   hintStyle:
-                      TextStyle(color: Colors.white.withOpacity(0.25)),
+                      TextStyle(color: Colors.white.withValues(alpha: 0.25)),
                   filled: true,
                   fillColor: const Color(0xFF1E2535),
                   contentPadding: const EdgeInsets.symmetric(
@@ -378,7 +360,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
                   ),
                   prefixIcon: Icon(
                     Icons.badge_outlined,
-                    color: Colors.white.withOpacity(0.35),
+                    color: Colors.white.withValues(alpha: 0.35),
                   ),
                 ),
               ),
@@ -395,7 +377,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
                     padding: const EdgeInsets.symmetric(
                         horizontal: 14, vertical: 8),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFEF4444).withOpacity(0.08),
+                      color: const Color(0xFFEF4444).withValues(alpha: 0.08),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
@@ -413,7 +395,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
               Text(
                 'CURRENT POSITION',
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.45),
+                  color: Colors.white.withValues(alpha: 0.45),
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 1.4,
@@ -434,7 +416,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
                   child: Text(
                     'Last updated: ${_formatTime(_lastUpdated!)}',
                     style: TextStyle(
-                      color: Colors.white.withOpacity(0.35),
+                      color: Colors.white.withValues(alpha: 0.35),
                       fontSize: 12,
                     ),
                   ),
@@ -518,9 +500,9 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
               const SizedBox(height: 24),
               Center(
                 child: Text(
-                  'Updates every $_kIntervalSeconds s  •  PATCH $_kBaseUrl/ambulances/{id}/location',
+                  'Updates every $_kIntervalSeconds s  •  PATCH $kAmbulanceBaseUrl/ambulances/{id}/location',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.2),
+                    color: Colors.white.withValues(alpha: 0.2),
                     fontSize: 11,
                   ),
                   textAlign: TextAlign.center,

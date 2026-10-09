@@ -1,4 +1,4 @@
-﻿// lib/screens/tracking_screen.dart
+// lib/user_app/screens/tracking_screen.dart
 //
 // Live incident tracking screen.
 // Polls GET /incidents/{incident_id} every 3 seconds and renders a visual
@@ -241,7 +241,7 @@ class _StatusCard extends StatelessWidget {
     final color = _statusColor(incident.status, context);
     return Card(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: color.withOpacity(0.1),
+      color: color.withValues(alpha: 0.1),
       elevation: 0,
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -354,7 +354,7 @@ class _StatusStepper extends StatelessWidget {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 2),
                           decoration: BoxDecoration(
-                            color: Colors.blue.withOpacity(0.1),
+                            color: Colors.blue.withValues(alpha: 0.1),
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: const Text(

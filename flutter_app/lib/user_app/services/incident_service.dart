@@ -1,4 +1,4 @@
-﻿// lib/services/incident_service.dart
+// lib/user_app/services/incident_service.dart
 //
 // Thin HTTP client for the ambulance-allocation backend.
 // Base URL is set here -- replace <my-local-ip> with your machine IP.
