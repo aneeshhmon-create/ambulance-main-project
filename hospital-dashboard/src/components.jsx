@@ -125,3 +125,48 @@ export function HospitalProfile({ hospital, busy, error, onToggle }) {
     </section>
   );
 }
+
+export function RegisterHospital({ first, onCreate, onCancel }) {
+  const [name, setName] = useState("");
+  const [lat, setLat] = useState("");
+  const [lng, setLng] = useState("");
+  const [departments, setDepartments] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await onCreate({
+        name: name.trim(),
+        location: { lat: Number(lat), lng: Number(lng) },
+        departments: departments.split(",").map((d) => d.trim()).filter(Boolean),
+      });
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="panel profile register" onSubmit={submit}>
+      <h2>{first ? "No hospitals yet — register one" : "Register a hospital"}</h2>
+      <label>Name<input required value={name} onChange={(e) => setName(e.target.value)} /></label>
+      <div className="row">
+        <label>Latitude<input required type="number" step="any" min="-90" max="90" value={lat} onChange={(e) => setLat(e.target.value)} placeholder="9.9390" /></label>
+        <label>Longitude<input required type="number" step="any" min="-180" max="180" value={lng} onChange={(e) => setLng(e.target.value)} placeholder="76.2700" /></label>
+      </div>
+      <label>
+        Departments (comma separated — must match the names the AI extracts, e.g. Trauma, Cardiology)
+        <input value={departments} onChange={(e) => setDepartments(e.target.value)} placeholder="Trauma, General Medicine" />
+      </label>
+      {error && <Banner>{error}</Banner>}
+      <div className="row">
+        <button className="accept" disabled={busy}>{busy ? "Saving…" : "Register hospital"}</button>
+        {onCancel && <button type="button" className="tabs-btn" onClick={onCancel}>Cancel</button>}
+      </div>
+    </form>
+  );
+}
