@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     String,
+    Text,
     Integer,
     DateTime,
     ForeignKey,
@@ -55,6 +56,7 @@ class Incident(Base):
     )
     victims: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     department_needed: Mapped[str | None] = mapped_column(String, nullable=True)
+    transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Status — pending / hospital_assigned / ambulance_assigned / completed
     status: Mapped[str] = mapped_column(

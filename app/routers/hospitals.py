@@ -10,6 +10,7 @@ GET    /hospitals                         – list all hospitals
 GET    /hospitals/nearby                  – geo-search (must come before /{id})
 GET    /hospitals/{id}                    – fetch one hospital
 PATCH  /hospitals/{id}                    – update departments / is_active
+GET    /hospitals/{id}/broadcasts         – broadcasts for a hospital + incident details
 
 Notes on geography
 ──────────────────
@@ -26,6 +27,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.hospital import Hospital
+from app.schemas.ambulance import AmbulanceOut
+from app.schemas.incident import HospitalBroadcastOut
 from app.schemas.hospital import (
     HospitalCreate,
     HospitalOut,
@@ -212,3 +215,94 @@ def update_hospital(
     db.commit()
     db.refresh(hospital)
     return _hospital_orm_to_out(hospital, db)
+
+
+# ── GET /hospitals/{id}/broadcasts ─────────────────────────────────────────────
+
+@router.get(
+    "/{hospital_id}/broadcasts",
+    response_model=list[HospitalBroadcastOut],
+    summary="List a hospital's incident broadcasts with incident details",
+)
+def list_hospital_broadcasts(
+    hospital_id: int,
+    status: str = Query(
+        "pending",
+        pattern="^(pending|accepted|expired|declined)$",
+        description="Broadcast status filter",
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Broadcasts addressed to this hospital, joined with incident details
+    (and the assigned ambulance, if any).  Ordered by severity (critical
+    first) then newest incident first.  Use `status=accepted` for the cases
+    this hospital has accepted.
+    """
+    if not db.get(Hospital, hospital_id):
+        raise HTTPException(status_code=404, detail=f"Hospital {hospital_id} not found")
+
+    rows = db.execute(
+        text(
+            "SELECT b.id AS broadcast_id, b.incident_id, b.status AS broadcast_status, "
+            "       b.sent_at, b.responded_at, "
+            "       i.emergency_type, i.severity, i.symptoms, i.victims, "
+            "       i.department_needed, i.transcript, i.created_at, "
+            "       i.status AS incident_status, i.assigned_hospital_id, "
+            "       ST_Y(i.location::geometry) AS lat, "
+            "       ST_X(i.location::geometry) AS lng, "
+            "       ST_Distance(i.location, h.location) / 1000.0 AS distance_km, "
+            "       a.id AS amb_id, a.driver_name, a.driver_phone, a.is_available, "
+            "       ST_Y(a.location::geometry) AS amb_lat, "
+            "       ST_X(a.location::geometry) AS amb_lng "
+            "FROM incident_broadcasts b "
+            "JOIN incidents i ON i.id = b.incident_id "
+            "JOIN hospitals h ON h.id = b.target_id "
+            "LEFT JOIN ambulances a ON a.id = i.assigned_ambulance_id "
+            "WHERE b.target_type = 'hospital' "
+            "  AND b.target_id = :hid "
+            "  AND b.status = :status "
+            "ORDER BY CASE i.severity "
+            "           WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+            "           WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
+            "         i.created_at DESC"
+        ),
+        {"hid": hospital_id, "status": status},
+    ).fetchall()
+
+    return [
+        HospitalBroadcastOut(
+            broadcast_id=r.broadcast_id,
+            incident_id=r.incident_id,
+            broadcast_status=r.broadcast_status,
+            sent_at=r.sent_at,
+            responded_at=r.responded_at,
+            emergency_type=r.emergency_type,
+            severity=r.severity,
+            symptoms=list(r.symptoms or []),
+            victims=r.victims,
+            department_needed=r.department_needed,
+            transcript=r.transcript,
+            location=LocationSchema(lat=r.lat, lng=r.lng),
+            created_at=r.created_at,
+            distance_km=round(r.distance_km, 2) if r.distance_km is not None else None,
+            incident_status=r.incident_status,
+            assigned_hospital_id=r.assigned_hospital_id,
+            assigned_ambulance=(
+                AmbulanceOut(
+                    id=r.amb_id,
+                    driver_name=r.driver_name,
+                    driver_phone=r.driver_phone,
+                    location=(
+                        LocationSchema(lat=r.amb_lat, lng=r.amb_lng)
+                        if r.amb_lat is not None and r.amb_lng is not None
+                        else None
+                    ),
+                    is_available=r.is_available,
+                )
+                if r.amb_id is not None
+                else None
+            ),
+        )
+        for r in rows
+    ]

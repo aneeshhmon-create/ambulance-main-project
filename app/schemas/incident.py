@@ -77,3 +77,31 @@ class IncidentOut(BaseModel):
     assigned_ambulance: Optional[AmbulanceOut] = None
     transcript: Optional[str] = None
     extracted_data: Optional[dict] = None
+
+
+class HospitalBroadcastOut(BaseModel):
+    """
+    One broadcast addressed to a hospital, joined with its incident details.
+    Returned by GET /hospitals/{hospital_id}/broadcasts.
+    """
+    broadcast_id: int
+    incident_id: int
+    broadcast_status: str
+    sent_at: datetime
+    responded_at: Optional[datetime] = None
+
+    emergency_type: Optional[str]
+    severity: Optional[str]
+    symptoms: list[str]
+    victims: int
+    department_needed: Optional[str]
+    transcript: Optional[str] = None
+    location: LocationSchema
+    created_at: datetime
+    distance_km: Optional[float] = Field(
+        None, description="Distance from the hospital to the incident, in km"
+    )
+
+    incident_status: str
+    assigned_hospital_id: Optional[int] = None
+    assigned_ambulance: Optional[AmbulanceOut] = None

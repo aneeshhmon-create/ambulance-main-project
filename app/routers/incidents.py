@@ -150,7 +150,7 @@ def _build_incident_out(
         created_at=incident.created_at,
         broadcasts=broadcasts_out,
         assigned_ambulance=ambulance_out,
-        transcript=transcript,
+        transcript=transcript or incident.transcript,
         extracted_data=extracted_data,
     )
 
@@ -181,6 +181,7 @@ def _create_incident_core(
         symptoms=symptoms,
         victims=victims,
         department_needed=department_needed,
+        transcript=transcript,
         status="pending",
     )
     db.add(incident)
