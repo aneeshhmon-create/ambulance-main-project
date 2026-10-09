@@ -13,6 +13,9 @@ POST  /incidents
 POST  /incidents/{incident_id}/broadcasts/{broadcast_id}/accept
     – Hospital accepts the case (atomic / race-safe via SELECT FOR UPDATE).
 
+POST  /incidents/{incident_id}/complete
+    – Mark the case finished and free its ambulance.
+
 GET   /incidents/{incident_id}
     – Full incident detail including broadcasts and statuses.
 
@@ -477,6 +480,49 @@ def accept_broadcast(
         raise HTTPException(status_code=404, detail="Incident disappeared after commit")
 
     return _build_incident_out(incident, db)
+
+
+# ── POST /incidents/{incident_id}/complete ────────────────────────────────────
+
+@router.post(
+    "/{incident_id}/complete",
+    response_model=IncidentOut,
+    summary="Mark an incident completed and release its ambulance",
+)
+def complete_incident(incident_id: int, db: Session = Depends(get_db)):
+    """
+    Called by the ambulance app when the patient has been handed over.
+    Sets status='completed' and makes the ambulance available again.
+    Idempotent: completing an already-completed incident just returns it.
+    """
+    row = db.execute(
+        text("SELECT id, status, assigned_ambulance_id FROM incidents WHERE id = :id FOR UPDATE"),
+        {"id": incident_id},
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    if row.status != "completed":
+        db.execute(
+            text("UPDATE incidents SET status = 'completed' WHERE id = :id"),
+            {"id": incident_id},
+        )
+        db.execute(
+            text(
+                "UPDATE incident_broadcasts SET status = 'expired', responded_at = NOW() "
+                "WHERE incident_id = :id AND status = 'pending'"
+            ),
+            {"id": incident_id},
+        )
+        if row.assigned_ambulance_id is not None:
+            db.execute(
+                text("UPDATE ambulances SET is_available = true WHERE id = :aid"),
+                {"aid": row.assigned_ambulance_id},
+            )
+        db.commit()
+
+    db.expire_all()
+    return _build_incident_out(db.get(Incident, incident_id), db)
 
 
 # ── GET /incidents/{incident_id} ──────────────────────────────────────────────

@@ -43,3 +43,5 @@ export const listBroadcasts = (id, status) =>
   request(`/hospitals/${id}/broadcasts?status=${status}`);
 export const acceptBroadcast = (incidentId, broadcastId) =>
   request(`/incidents/${incidentId}/broadcasts/${broadcastId}/accept`, { method: "POST" });
+export const createHospital = (body) =>
+  request("/hospitals", { method: "POST", body: JSON.stringify(body) });

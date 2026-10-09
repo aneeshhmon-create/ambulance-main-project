@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ApiError, POLL_INTERVAL_MS, acceptBroadcast, getHospital, listBroadcasts,
+  ApiError, POLL_INTERVAL_MS, acceptBroadcast, createHospital, getHospital, listBroadcasts,
   listHospitals, setHospitalActive,
 } from "./api.js";
 import { usePolling } from "./usePolling.js";
-import { AcceptedCase, Banner, HospitalProfile, IncidentCard } from "./components.jsx";
+import { AcceptedCase, Banner, HospitalProfile, IncidentCard, RegisterHospital } from "./components.jsx";
 
 const NEW_HIGHLIGHT_MS = 10000;
 
@@ -15,6 +15,8 @@ function loadSavedHospital() {
 export default function App() {
   const [hospitals, setHospitals] = useState([]);
   const [hospitalsError, setHospitalsError] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [registering, setRegistering] = useState(false);
   const [hospitalId, setHospitalId] = useState(loadSavedHospital);
   const [tab, setTab] = useState("incidents");
 
@@ -24,6 +26,7 @@ export default function App() {
       .then((list) => {
         if (cancelled) return;
         setHospitals(list);
+        setLoaded(true);
         setHospitalId((cur) => (list.some((h) => h.id === cur) ? cur : list[0]?.id ?? null));
       })
       .catch((e) => !cancelled && setHospitalsError(e.message));
@@ -46,12 +49,27 @@ export default function App() {
         >
           {hospitals.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
         </select>
+        {loaded && !registering && (
+          <button className="tabs-btn" onClick={() => setRegistering(true)}>+ Register hospital</button>
+        )}
       </header>
 
       {hospitalsError && <Banner>Could not load hospitals: {hospitalsError}</Banner>}
-      {!hospitalId && !hospitalsError && <p className="muted center">Loading hospitals…</p>}
+      {!loaded && !hospitalsError && <p className="muted center">Loading hospitals…</p>}
+      {loaded && (registering || hospitals.length === 0) && (
+        <RegisterHospital
+          first={hospitals.length === 0}
+          onCancel={hospitals.length ? () => setRegistering(false) : null}
+          onCreate={async (body) => {
+            const h = await createHospital(body);
+            setHospitals((l) => [...l, h]);
+            setHospitalId(h.id);
+            setRegistering(false);
+          }}
+        />
+      )}
 
-      {hospitalId && (
+      {hospitalId && !registering && (
         <>
           <nav className="tabs">
             <button className={tab === "incidents" ? "on" : ""} onClick={() => setTab("incidents")}>Emergencies</button>

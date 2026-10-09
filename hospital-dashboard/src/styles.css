@@ -56,3 +56,9 @@ button.accept:disabled { opacity: .6; cursor: wait; }
 .profile-name { font-size: 1.3rem; font-weight: 600; margin: 0; }
 .switch { display: flex; align-items: center; gap: 10px; cursor: pointer; }
 .switch input { width: 20px; height: 20px; }
+.register { display: flex; flex-direction: column; gap: 12px; }
+.register label { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--muted); flex: 1; }
+.register input { padding: 8px 10px; font-size: 1rem; border: 1px solid var(--line); border-radius: 6px; color: var(--text); }
+.row { display: flex; gap: 12px; }
+.tabs-btn { padding: 8px 14px; border: 1px solid var(--line); background: #fff; border-radius: 6px; cursor: pointer; font-size: .95rem; }
+.topbar { gap: 8px; }

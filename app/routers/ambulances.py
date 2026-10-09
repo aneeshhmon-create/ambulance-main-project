@@ -9,6 +9,7 @@ POST   /ambulances                        – register an ambulance
 GET    /ambulances                        – list all ambulances
 GET    /ambulances/nearest                – find nearest available ambulance
 PATCH  /ambulances/{id}/location          – update GPS position
+GET    /ambulances/{id}/assignment        – active incident + patient/hospital locations
 
 Notes on geography
 ──────────────────
@@ -28,6 +29,9 @@ from app.schemas.ambulance import (
     AmbulanceOut,
     AmbulanceLocationUpdate,
     AmbulanceNearestOut,
+    AmbulanceAssignmentOut,
+    AssignmentHospitalOut,
+    AssignmentPatientOut,
 )
 from app.schemas.hospital import LocationSchema
 
@@ -185,3 +189,79 @@ def update_ambulance_location(
     db.commit()
     db.refresh(ambulance)
     return _ambulance_orm_to_out(ambulance, db)
+
+
+# ── GET /ambulances/{id}/assignment ───────────────────────────────────────────
+
+@router.get(
+    "/{ambulance_id}/assignment",
+    response_model=AmbulanceAssignmentOut,
+    summary="Get the active incident assigned to this ambulance",
+)
+def get_ambulance_assignment(ambulance_id: int, db: Session = Depends(get_db)):
+    """
+    Poll this from the driver's app every few seconds.
+
+    Returns `assigned=false` when idle.  Otherwise returns the patient
+    location and incident details; `hospital` is null until a hospital has
+    accepted the case, so keep polling until it appears.
+    """
+    if not db.get(Ambulance, ambulance_id):
+        raise HTTPException(status_code=404, detail=f"Ambulance {ambulance_id} not found")
+
+    r = db.execute(
+        text(
+            "SELECT i.id, i.status, i.emergency_type, i.severity, i.symptoms, "
+            "       i.victims, i.department_needed, i.created_at, "
+            "       ST_Y(i.location::geometry) AS lat, ST_X(i.location::geometry) AS lng, "
+            "       ST_Distance(i.location, a.location) / 1000.0 AS to_patient_km, "
+            "       u.name AS user_name, u.phone AS user_phone, "
+            "       h.id AS h_id, h.name AS h_name, h.departments AS h_departments, "
+            "       ST_Y(h.location::geometry) AS h_lat, ST_X(h.location::geometry) AS h_lng, "
+            "       ST_Distance(i.location, h.location) / 1000.0 AS patient_to_h_km "
+            "FROM incidents i "
+            "JOIN ambulances a ON a.id = i.assigned_ambulance_id "
+            "LEFT JOIN users u ON u.id = i.user_id "
+            "LEFT JOIN hospitals h ON h.id = i.assigned_hospital_id "
+            "WHERE i.assigned_ambulance_id = :aid "
+            "  AND i.status IN ('pending', 'hospital_assigned', 'ambulance_assigned') "
+            "ORDER BY i.created_at DESC "
+            "LIMIT 1"
+        ),
+        {"aid": ambulance_id},
+    ).fetchone()
+
+    if not r:
+        return AmbulanceAssignmentOut(assigned=False)
+
+    return AmbulanceAssignmentOut(
+        assigned=True,
+        incident_id=r.id,
+        incident_status=r.status,
+        emergency_type=r.emergency_type,
+        severity=r.severity,
+        symptoms=list(r.symptoms or []),
+        victims=r.victims,
+        department_needed=r.department_needed,
+        created_at=r.created_at,
+        patient_location=LocationSchema(lat=r.lat, lng=r.lng),
+        patient=(
+            AssignmentPatientOut(name=r.user_name, phone=r.user_phone)
+            if r.user_name is not None else None
+        ),
+        hospital=(
+            AssignmentHospitalOut(
+                id=r.h_id,
+                name=r.h_name,
+                location=LocationSchema(lat=r.h_lat, lng=r.h_lng),
+                departments=list(r.h_departments or []),
+            )
+            if r.h_id is not None else None
+        ),
+        distance_to_patient_km=(
+            round(r.to_patient_km, 2) if r.to_patient_km is not None else None
+        ),
+        distance_patient_to_hospital_km=(
+            round(r.patient_to_h_km, 2) if r.patient_to_h_km is not None else None
+        ),
+    )
