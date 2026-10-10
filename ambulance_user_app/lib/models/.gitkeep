@@ -1,0 +1,6 @@
+// models/ — placeholder directory for data model classes.
+//
+// Future models to add here (Day 2+):
+//   incident_model.dart   — maps POST /incidents response
+//   hospital_model.dart   — maps hospital broadcast payload
+//   ambulance_model.dart  — maps assigned ambulance info
