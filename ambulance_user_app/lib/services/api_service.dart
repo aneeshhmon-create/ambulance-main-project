@@ -259,4 +259,105 @@ class ApiService {
     }
     throw const ApiException('Invalid response format received from server.');
   }
+
+  /// Retrieves an incident's current status and details via GET /incidents/{id}.
+  Future<Incident> fetchIncident(int incidentId) async {
+    final data = await _get('/incidents/$incidentId');
+    if (data is Map<String, dynamic>) {
+      return Incident.fromJson(data);
+    }
+    throw const ApiException('Invalid response format received from server.');
+  }
+
+  /// Pushes an ambulance's current GPS location via PATCH /ambulances/{id}/location.
+  Future<void> updateAmbulanceLocation({
+    required String ambulanceId,
+    required double lat,
+    required double lng,
+  }) async {
+    final uri = Uri.parse('${ApiConfig.baseUrl}/ambulances/$ambulanceId/location');
+
+    try {
+      final response = await _client
+          .patch(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'location': {'lat': lat, 'lng': lng},
+            }),
+          )
+          .timeout(_timeout);
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw _parseErrorResponse(response);
+      }
+    } on ApiException {
+      rethrow;
+    } on SocketException {
+      throw const ApiException(
+        'No network connection. Check your Wi-Fi and try again.',
+      );
+    } on TimeoutException {
+      throw const ApiException(
+        'Request timed out. The server took too long to respond.',
+      );
+    } on Exception catch (e) {
+      throw ApiException('Unexpected error: $e');
+    }
+  }
+
+  // ── Static Convenience Methods ─────────────────────────────────────────────
+
+  /// Static helper for fetching incident details by ID.
+  static Future<Incident> getIncidentById(int incidentId, {ApiService? api}) =>
+      (api ?? ApiService()).fetchIncident(incidentId);
+
+  /// Static helper for updating an ambulance's location.
+  static Future<void> updateLocation({
+    required String ambulanceId,
+    required double lat,
+    required double lng,
+    ApiService? api,
+  }) =>
+      (api ?? ApiService()).updateAmbulanceLocation(
+        ambulanceId: ambulanceId,
+        lat: lat,
+        lng: lng,
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compatibility Wrappers for Person C's Services
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Backward compatibility alias for Person C's [IncidentData].
+typedef IncidentData = Incident;
+
+/// Backward compatibility alias for Person C's [IncidentServiceException].
+typedef IncidentServiceException = ApiException;
+
+/// Shared wrapper forwarding incident lookups to [ApiService].
+class IncidentService {
+  const IncidentService._();
+
+  static Future<Incident> fetchIncident(int incidentId, {ApiService? api}) =>
+      ApiService.getIncidentById(incidentId, api: api);
+}
+
+/// Shared wrapper forwarding ambulance location pushes to [ApiService].
+class AmbulanceService {
+  const AmbulanceService._();
+
+  static Future<void> updateLocation({
+    required String ambulanceId,
+    required double lat,
+    required double lng,
+    ApiService? api,
+  }) =>
+      ApiService.updateLocation(
+        ambulanceId: ambulanceId,
+        lat: lat,
+        lng: lng,
+        api: api,
+      );
 }

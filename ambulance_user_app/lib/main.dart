@@ -4,13 +4,14 @@ import 'package:flutter/material.dart';
 
 import 'config/routes.dart';
 import 'models/user.dart';
+import 'screens/driver_location_screen.dart';
 import 'screens/error_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/record_screen.dart';
 import 'screens/register_screen.dart';
 import 'screens/result_screen.dart';
 import 'screens/submit_screen.dart';
-import 'screens/tracking_placeholder_screen.dart';
+import 'screens/tracking_screen.dart';
 import 'services/cleanup_service.dart';
 import 'services/user_storage.dart';
 
@@ -62,7 +63,14 @@ class AmbulanceUserApp extends StatelessWidget {
         AppRoutes.report: (context) => const RecordScreen(),
         AppRoutes.submit: (context) => const SubmitScreen(),
         AppRoutes.result: (context) => const ResultScreen(),
-        AppRoutes.tracking: (context) => const TrackingPlaceholderScreen(),
+        AppRoutes.tracking: (context) {
+          final args = ModalRoute.of(context)?.settings.arguments;
+          final incidentId = args is int
+              ? args
+              : (args is String ? int.tryParse(args) ?? 0 : 0);
+          return TrackingScreen(incidentId: incidentId);
+        },
+        AppRoutes.driverLocation: (context) => const DriverLocationScreen(),
       },
       onGenerateRoute: (settings) {
         if (settings.name == AppRoutes.root) {

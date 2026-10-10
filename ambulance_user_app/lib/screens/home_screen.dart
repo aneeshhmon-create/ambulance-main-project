@@ -381,9 +381,60 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+
+              const SizedBox(height: 20),
+
+              // ── Developer Section ──────────────────────────────────────────
+              _buildDeveloperSection(),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildDeveloperSection() {
+    return Container(
+      key: const ValueKey('developer_section'),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.developer_mode_rounded, size: 16, color: Colors.grey[700]),
+              const SizedBox(width: 8),
+              Text(
+                'DEVELOPER',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey[700],
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            key: const ValueKey('driver_mode_button'),
+            onPressed: () {
+              Navigator.of(context).pushNamed(AppRoutes.driverLocation);
+            },
+            icon: const Icon(Icons.drive_eta_rounded, size: 18),
+            label: const Text('Driver mode'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.grey[800],
+              side: BorderSide(color: Colors.grey.shade400),
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+        ],
       ),
     );
   }

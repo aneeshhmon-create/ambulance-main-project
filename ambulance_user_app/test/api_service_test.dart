@@ -179,4 +179,112 @@ void main() {
       );
     });
   });
+
+  group('ApiService.fetchIncident() & IncidentService', () {
+    test('fetches and parses incident successfully', () async {
+      final mockData = {
+        'id': 105,
+        'status': 'hospital_assigned',
+        'assigned_hospital_id': 3,
+        'assigned_ambulance_id': 7,
+        'emergency_type': 'Chest Pain',
+        'severity': 'high',
+        'department_needed': 'Cardiology',
+        'location': {'lat': 9.93, 'lng': 76.26},
+        'victims': 1,
+        'symptoms': ['Chest tightness'],
+        'broadcasts': [
+          {'id': 1, 'incident_id': 105, 'target_type': 'hospital', 'target_id': 3, 'status': 'accepted'}
+        ],
+      };
+
+      final client = MockClient((request) async {
+        expect(request.method, equals('GET'));
+        expect(request.url.path, equals('/incidents/105'));
+        return http.Response(jsonEncode(mockData), 200);
+      });
+
+      final api = ApiService(client: client);
+      final incident = await api.fetchIncident(105);
+
+      expect(incident.id, equals(105));
+      expect(incident.status, equals('hospital_assigned'));
+      expect(incident.assignedHospitalId, equals(3));
+      expect(incident.severity, equals('high'));
+
+      // Also verify IncidentService wrapper
+      final viaWrapper = await IncidentService.fetchIncident(105, api: api);
+      expect(viaWrapper.id, equals(105));
+    });
+
+    test('throws ApiException on 404 not found', () async {
+      final client = MockClient((request) async {
+        return http.Response(jsonEncode({'detail': 'Incident not found'}), 404);
+      });
+
+      final api = ApiService(client: client);
+      expect(
+        () => api.fetchIncident(999),
+        throwsA(
+          predicate<ApiException>(
+            (e) => e.message.contains('Incident not found'),
+          ),
+        ),
+      );
+    });
+  });
+
+  group('ApiService.updateAmbulanceLocation() & AmbulanceService', () {
+    test('sends PATCH request with coordinates correctly', () async {
+      var patchCalled = false;
+      final client = MockClient((request) async {
+        expect(request.method, equals('PATCH'));
+        expect(request.url.path, equals('/ambulances/amb-001/location'));
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['location']['lat'], equals(9.939));
+        expect(body['location']['lng'], equals(76.27));
+        patchCalled = true;
+        return http.Response(jsonEncode({'status': 'updated'}), 200);
+      });
+
+      final api = ApiService(client: client);
+      await api.updateAmbulanceLocation(
+        ambulanceId: 'amb-001',
+        lat: 9.939,
+        lng: 76.27,
+      );
+
+      expect(patchCalled, isTrue);
+
+      // Also test AmbulanceService wrapper
+      patchCalled = false;
+      await AmbulanceService.updateLocation(
+        ambulanceId: 'amb-001',
+        lat: 9.939,
+        lng: 76.27,
+        api: api,
+      );
+      expect(patchCalled, isTrue);
+    });
+
+    test('throws ApiException on server error', () async {
+      final client = MockClient((request) async {
+        return http.Response('Server error', 500);
+      });
+
+      final api = ApiService(client: client);
+      expect(
+        () => api.updateAmbulanceLocation(
+          ambulanceId: 'amb-001',
+          lat: 9.939,
+          lng: 76.27,
+        ),
+        throwsA(
+          predicate<ApiException>(
+            (e) => e.message.contains('500'),
+          ),
+        ),
+      );
+    });
+  });
 }
