@@ -215,6 +215,23 @@ def _create_incident_core(
                     "radius_m": radius_m,
                 },
             ).fetchall()
+
+            if not hospital_rows:
+                logger.info(
+                    "[Incidents] No hospitals within %s km; falling back to nearest matching hospitals.",
+                    BROADCAST_RADIUS_KM,
+                )
+                hospital_rows = db.execute(
+                    text(
+                        "SELECT h.id "
+                        "FROM hospitals h "
+                        "WHERE h.is_active = true "
+                        "  AND :dept = ANY(h.departments) "
+                        "ORDER BY ST_Distance(h.location, ST_MakePoint(:lng, :lat)::geography) ASC "
+                        "LIMIT 3"
+                    ),
+                    {"dept": department_needed, "lat": lat, "lng": lng},
+                ).fetchall()
         except Exception as exc:
             logger.warning("[Incidents] Spatial hospital query failed (%s); fallback to non-spatial department filter.", exc)
             hospital_rows = db.execute(

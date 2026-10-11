@@ -7,57 +7,39 @@ from app.models.ambulance import Ambulance
 db = SessionLocal()
 
 try:
-    # Clear existing demo records if any
-    db.query(Hospital).delete()
-    db.query(Ambulance).delete()
+    # 1. Hospitals (Kochi & Trivandrum)
+    hospitals_data = [
+        ("Kochi Trauma & General Hospital", "SRID=4326;POINT(76.2700 9.9390)", ["Trauma", "General Medicine", "Orthopedics"]),
+        ("Lakeside Cardiology Institute", "SRID=4326;POINT(76.2800 9.9450)", ["Cardiology", "General Medicine"]),
+        ("Kerala Chest & Pulmonary Hospital", "SRID=4326;POINT(76.2650 9.9520)", ["Pulmonology", "General Medicine"]),
+        ("Mother & Child Pediatrics Center", "SRID=4326;POINT(76.2900 9.9600)", ["Pediatrics", "General Medicine"]),
+        ("Trivandrum Medical College Hospital", "SRID=4326;POINT(76.9298 8.5241)", ["Trauma", "General Medicine", "Orthopedics", "Cardiology", "Pediatrics"]),
+        ("KIMSHEALTH Trivandrum", "SRID=4326;POINT(76.9015 8.5085)", ["Cardiology", "Trauma", "Pulmonology", "Pediatrics", "General Medicine"]),
+        ("Trivandrum General Hospital", "SRID=4326;POINT(76.9450 8.5000)", ["General Medicine", "Trauma", "Pulmonology"]),
+    ]
+
+    for name, loc, depts in hospitals_data:
+        existing = db.query(Hospital).filter_by(name=name).first()
+        if not existing:
+            db.add(Hospital(name=name, location=loc, departments=depts, is_active=True))
+
+    # 2. Ambulances (Kochi & Trivandrum)
+    ambulances_data = [
+        ("Ramesh Kumar (Kochi)", "+919846011111", "SRID=4326;POINT(76.2680 9.9320)"),
+        ("Suresh Nair (Kochi)", "+919846022222", "SRID=4326;POINT(76.2750 9.9400)"),
+        ("Anand V (Trivandrum)", "+919846033333", "SRID=4326;POINT(76.9500 8.5300)"),
+        ("Vishnu Raj (Trivandrum)", "+919846044444", "SRID=4326;POINT(76.9200 8.5200)"),
+    ]
+
+    for driver, phone, loc in ambulances_data:
+        existing = db.query(Ambulance).filter_by(driver_phone=phone).first()
+        if not existing:
+            db.add(Ambulance(driver_name=driver, driver_phone=phone, location=loc, is_available=True))
+        else:
+            existing.driver_name = driver
+
     db.commit()
-
-    # 1. Hospitals
-    h1 = Hospital(
-        name="Kochi Trauma & General Hospital",
-        location="SRID=4326;POINT(76.2700 9.9390)",
-        departments=["Trauma", "General Medicine", "Orthopedics"],
-        is_active=True,
-    )
-    h2 = Hospital(
-        name="Lakeside Cardiology Institute",
-        location="SRID=4326;POINT(76.2800 9.9450)",
-        departments=["Cardiology", "General Medicine"],
-        is_active=True,
-    )
-    h3 = Hospital(
-        name="Kerala Chest & Pulmonary Hospital",
-        location="SRID=4326;POINT(76.2650 9.9520)",
-        departments=["Pulmonology", "General Medicine"],
-        is_active=True,
-    )
-    h4 = Hospital(
-        name="Mother & Child Pediatrics Center",
-        location="SRID=4326;POINT(76.2900 9.9600)",
-        departments=["Pediatrics", "General Medicine"],
-        is_active=True,
-    )
-
-    db.add_all([h1, h2, h3, h4])
-
-    # 2. Ambulances
-    a1 = Ambulance(
-        driver_name="Ramesh Kumar",
-        driver_phone="+919846011111",
-        location="SRID=4326;POINT(76.2680 9.9320)",
-        is_available=True,
-    )
-    a2 = Ambulance(
-        driver_name="Suresh Nair",
-        driver_phone="+919846022222",
-        location="SRID=4326;POINT(76.2750 9.9400)",
-        is_available=True,
-    )
-
-    db.add_all([a1, a2])
-    db.commit()
-
-    print("Successfully seeded 4 hospitals and 2 ambulances!")
+    print("Successfully seeded hospitals and ambulances!")
 
 except Exception as e:
     db.rollback()
