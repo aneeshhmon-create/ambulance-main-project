@@ -7,9 +7,7 @@ import 'package:http/testing.dart';
 
 import 'package:ambulance_app/user_app/config/routes.dart';
 import 'package:ambulance_app/user_app/models/incident.dart';
-import 'package:ambulance_app/user_app/models/user.dart';
 import 'package:ambulance_app/driver_app/screens/driver_location_screen.dart';
-import 'package:ambulance_app/user_app/screens/home_screen.dart';
 import 'package:ambulance_app/user_app/screens/result_screen.dart';
 import 'package:ambulance_app/user_app/screens/tracking_screen.dart';
 import 'package:ambulance_app/user_app/services/api_service.dart';
