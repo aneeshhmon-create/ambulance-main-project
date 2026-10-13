@@ -37,6 +37,9 @@ Design decisions
 import os
 import time
 import logging
+import subprocess
+
+import numpy as np
 
 from faster_whisper import WhisperModel
 
@@ -64,13 +67,45 @@ def _cuda_available() -> bool:
         return False
 
 
+def _preload_cuda_libs() -> None:
+    """
+    Load cuBLAS/cuDNN shipped by the nvidia-*-cu12 pip packages, so no manual
+    LD_LIBRARY_PATH is needed. Silently does nothing if they aren't installed.
+    """
+    import ctypes
+    import glob
+    import importlib
+
+    for mod, pattern in (("nvidia.cublas.lib", "libcublas*.so*"), ("nvidia.cudnn.lib", "libcudnn*.so*")):
+        try:
+            paths = list(importlib.import_module(mod).__path__)
+        except Exception:
+            continue
+        for d in paths:
+            # cublasLt / cudnn sub-libs first-load order is handled by RTLD_GLOBAL + lazy lookup
+            for so in sorted(glob.glob(os.path.join(d, pattern))):
+                try:
+                    ctypes.CDLL(so, mode=ctypes.RTLD_GLOBAL)
+                except OSError:
+                    pass
+
+
+def _gpu_selftest(model: WhisperModel) -> None:
+    """Tiny inference: model load succeeds even if cuBLAS/cuDNN are missing."""
+    segs, _ = model.transcribe(np.zeros(16000, dtype=np.float32), language="en", beam_size=1)
+    list(segs)
+
+
 def _load_model() -> tuple[WhisperModel, str, str]:
     forced = (os.environ.get("WHISPER_DEVICE") or "").lower()
     if forced != "cpu" and (forced == "cuda" or _cuda_available()):
+        _preload_cuda_libs()
         for compute in ("float16", "int8_float16"):
             try:
                 logger.info("Loading '%s' on GPU (%s) ...", _MODEL_SIZE, compute)
-                return WhisperModel(_MODEL_SIZE, device="cuda", compute_type=compute), "cuda", compute
+                model = WhisperModel(_MODEL_SIZE, device="cuda", compute_type=compute)
+                _gpu_selftest(model)
+                return model, "cuda", compute
             except Exception as exc:  # missing cuDNN/cuBLAS, out of memory, ...
                 logger.warning("GPU load failed (%s: %s).", compute, exc)
         logger.warning("Falling back to CPU -- transcription will be much slower.")
@@ -95,15 +130,31 @@ _ALLOWED_LANGUAGES = frozenset({"ml", "en"})
 _DEFAULT_LANGUAGE = "ml"
 
 
-def _pick_language(file_path: str) -> str:
+def _decode_audio(file_path: str) -> np.ndarray:
+    """
+    Decode any ffmpeg-readable file to 16 kHz mono float32.
+
+    Uses the ffmpeg CLI directly: faster-whisper 1.1.1's built-in decoder calls
+    av.open(metadata_errors=...), which newer PyAV releases reject. Decoding
+    once here also avoids decoding twice (language detection + transcription).
+    """
+    proc = subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-i", file_path,
+         "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed to decode audio: {proc.stderr.decode(errors='replace')[:300]}")
+    return np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+
+
+def _pick_language(audio: np.ndarray) -> str:
     """
     Detect the language among {ml, en} only, so Whisper's guess of Hindi/Tamil
     (acoustically similar / noisy clips) can never be chosen, and the clip is
     transcribed exactly once. Costs one encoder pass over the first 30 s.
     """
     try:
-        from faster_whisper.audio import decode_audio
-        audio = decode_audio(file_path, sampling_rate=16000)
         _, _, all_probs = _model.detect_language(audio[: 30 * 16000])
         probs = {lang: p for lang, p in all_probs if lang in _ALLOWED_LANGUAGES}
         if probs:
@@ -116,7 +167,6 @@ def _pick_language(file_path: str) -> str:
 def warmup() -> None:
     """Run a tiny dummy inference so CUDA init / kernel load happens at startup."""
     try:
-        import numpy as np
         t0 = time.perf_counter()
         segs, _ = _model.transcribe(np.zeros(16000, dtype=np.float32), language="en", beam_size=1)
         list(segs)
@@ -126,10 +176,10 @@ def warmup() -> None:
 
 
 # ── Shared transcribe call ────────────────────────────────────────────────────
-def _run_transcribe(file_path: str, language: str):
+def _run_transcribe(audio: np.ndarray, language: str):
     """Single transcribe call with consistent settings."""
     segments, info = _model.transcribe(
-        file_path,
+        audio,
         language=language,
         beam_size=1,                      # greedy: fastest
         vad_filter=True,                  # strip silence / phone noise
@@ -167,9 +217,10 @@ def transcribe_audio(file_path: str) -> dict:
     print(f"[STT] >> Transcription started  -- {time.strftime('%H:%M:%S')}")
     logger.info("[STT] Starting transcription: %s", file_path)
 
-    final_language = _pick_language(file_path)
+    audio = _decode_audio(file_path)
+    final_language = _pick_language(audio)
     t_detect = time.perf_counter()
-    transcript, _info = _run_transcribe(file_path, language=final_language)
+    transcript, _info = _run_transcribe(audio, language=final_language)
 
     t_end = time.perf_counter()
     duration = round(t_end - t_start, 2)
