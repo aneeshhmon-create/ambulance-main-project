@@ -1,4 +1,4 @@
-// lib/ambulance_app/services/ambulance_service.dart
+// lib/driver_app/services/ambulance_service.dart
 //
 // HTTP client for pushing ambulance GPS location to the backend.
 // Keeps the driver screen free of network plumbing.
@@ -6,10 +6,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
-// ---------------------------------------------------------------------------
-// Change this to your backend's base URL (no trailing slash).
-// ---------------------------------------------------------------------------
-const String kAmbulanceBaseUrl = 'http://localhost:8000';
+import 'package:ambulance_app/driver_app/config/api_config.dart';
 
 class AmbulanceService {
   /// Sends a PATCH request to /ambulances/{ambulanceId}/location with the
@@ -22,7 +19,7 @@ class AmbulanceService {
     required double lng,
   }) async {
     final uri =
-        Uri.parse('$kAmbulanceBaseUrl/ambulances/$ambulanceId/location');
+        Uri.parse('${DriverApiConfig.baseUrl}/ambulances/$ambulanceId/location');
     final response = await http
         .patch(
           uri,

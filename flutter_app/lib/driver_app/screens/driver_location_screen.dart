@@ -1,9 +1,10 @@
+﻿import 'package:ambulance_app/driver_app/config/api_config.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
-import '../services/ambulance_service.dart';
+import 'package:ambulance_app/driver_app/services/ambulance_service.dart';
 
 // How often to push the location (seconds).
 const int _kIntervalSeconds = 5;
@@ -173,7 +174,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
         ),
       _SharingStatus.permissionDenied => (
           Icons.block,
-          'Permission denied — enable in Settings',
+          'Permission denied â€” enable in Settings',
           const Color(0xFFEF4444),
         ),
       _SharingStatus.gpsDisabled => (
@@ -500,7 +501,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
               const SizedBox(height: 24),
               Center(
                 child: Text(
-                  'Updates every $_kIntervalSeconds s  •  PATCH $kAmbulanceBaseUrl/ambulances/{id}/location',
+                  'Updates every $_kIntervalSeconds s  â€¢  PATCH $kAmbulanceBaseUrl/ambulances/{id}/location',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.2),
                     fontSize: 11,

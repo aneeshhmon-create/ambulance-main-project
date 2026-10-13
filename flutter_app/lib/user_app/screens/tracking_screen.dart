@@ -1,16 +1,19 @@
-// lib/user_app/screens/tracking_screen.dart
+﻿// lib/screens/tracking_screen.dart
 //
-// Live incident tracking screen.
+// Live incident tracking screen (implemented by Person C, integrated Day 7).
 // Polls GET /incidents/{incident_id} every 3 seconds and renders a visual
 // status progression. Stops polling when status reaches "completed".
 
 import 'dart:async';
-import 'package:flutter/material.dart';
-import '../services/incident_service.dart';
 
-// ─────────────────────────────────────────────────────────────────────────────
+import 'package:flutter/material.dart';
+
+import 'package:ambulance_app/user_app/models/incident.dart';
+import 'package:ambulance_app/user_app/services/api_service.dart';
+
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Status helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const _statusOrder = [
   'pending',
@@ -20,7 +23,7 @@ const _statusOrder = [
 ];
 
 String _statusLabel(String status) {
-  switch (status) {
+  switch (status.toLowerCase()) {
     case 'pending':
       return 'Reported';
     case 'hospital_assigned':
@@ -35,7 +38,7 @@ String _statusLabel(String status) {
 }
 
 String _statusFriendlyMessage(String status) {
-  switch (status) {
+  switch (status.toLowerCase()) {
     case 'pending':
       return 'Searching for nearby hospitals...\nPlease stay calm and keep your phone nearby.';
     case 'hospital_assigned':
@@ -50,7 +53,7 @@ String _statusFriendlyMessage(String status) {
 }
 
 Color _statusColor(String status, BuildContext context) {
-  switch (status) {
+  switch (status.toLowerCase()) {
     case 'pending':
       return Colors.orange;
     case 'hospital_assigned':
@@ -64,14 +67,19 @@ Color _statusColor(String status, BuildContext context) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // TrackingScreen widget
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class TrackingScreen extends StatefulWidget {
   final int incidentId;
+  final ApiService? apiService;
 
-  const TrackingScreen({super.key, required this.incidentId});
+  const TrackingScreen({
+    super.key,
+    required this.incidentId,
+    this.apiService,
+  });
 
   @override
   State<TrackingScreen> createState() => _TrackingScreenState();
@@ -79,8 +87,9 @@ class TrackingScreen extends StatefulWidget {
 
 class _TrackingScreenState extends State<TrackingScreen> {
   Timer? _timer;
+  late final ApiService _api;
 
-  IncidentData? _incident;
+  Incident? _incident;
   String? _errorMessage;
   bool _isLoading = true;
 
@@ -89,6 +98,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
   @override
   void initState() {
     super.initState();
+    _api = widget.apiService ?? ApiService();
     _fetchAndUpdate();
     _timer = Timer.periodic(_pollInterval, (_) => _fetchAndUpdate());
   }
@@ -101,7 +111,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
 
   Future<void> _fetchAndUpdate() async {
     try {
-      final data = await IncidentService.fetchIncident(widget.incidentId);
+      final data = await _api.fetchIncident(widget.incidentId);
       if (!mounted) return;
       setState(() {
         _incident = data;
@@ -109,20 +119,26 @@ class _TrackingScreenState extends State<TrackingScreen> {
         _isLoading = false;
       });
       // Stop polling once the incident is completed
-      if (data.status == 'completed') {
+      if (data.status.toLowerCase() == 'completed') {
         _timer?.cancel();
         _timer = null;
       }
-    } on IncidentServiceException catch (e) {
+    } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
         _errorMessage = e.message;
         _isLoading = false;
       });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = e.toString();
+        _isLoading = false;
+      });
     }
   }
 
-  // Manual retry — clears error, re-shows loading and restarts poll
+  // Manual retry â€” clears error, re-shows loading and restarts poll
   void _retry() {
     setState(() {
       _isLoading = true;
@@ -133,7 +149,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
     _timer = Timer.periodic(_pollInterval, (_) => _fetchAndUpdate());
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
+  // â”€â”€ Build â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   @override
   Widget build(BuildContext context) {
@@ -155,7 +171,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(),
+            CircularProgressIndicator(color: Colors.red),
             SizedBox(height: 16),
             Text('Loading incident data...'),
           ],
@@ -164,7 +180,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
     }
 
     if (_errorMessage != null && _incident == null) {
-      // Hard error — nothing to show yet
+      // Hard error â€” nothing to show yet
       return _ErrorView(message: _errorMessage!, onRetry: _retry);
     }
 
@@ -202,7 +218,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
             const SizedBox(height: 8),
 
             // Polling hint
-            if (incident.status != 'completed')
+            if (incident.status.toLowerCase() != 'completed')
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 4),
                 child: Row(
@@ -211,11 +227,11 @@ class _TrackingScreenState extends State<TrackingScreen> {
                     SizedBox(
                       width: 12,
                       height: 12,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red),
                     ),
                     SizedBox(width: 8),
                     Text(
-                      'Auto-refreshing every 3 s  •  Pull to refresh',
+                      'Auto-refreshing every 3 s  â€¢  Pull to refresh',
                       style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                   ],
@@ -228,12 +244,12 @@ class _TrackingScreenState extends State<TrackingScreen> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Sub-widgets
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _StatusCard extends StatelessWidget {
-  final IncidentData incident;
+  final Incident incident;
   const _StatusCard({required this.incident});
 
   @override
@@ -281,7 +297,7 @@ class _StatusCard extends StatelessWidget {
   }
 }
 
-// ── Status Stepper ────────────────────────────────────────────────────────────
+// â”€â”€ Status Stepper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _StatusStepper extends StatelessWidget {
   final String currentStatus;
@@ -289,7 +305,8 @@ class _StatusStepper extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final currentIndex = _statusOrder.indexOf(currentStatus);
+    final normalized = currentStatus.toLowerCase();
+    final currentIndex = _statusOrder.indexOf(normalized);
     return Card(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
@@ -312,9 +329,9 @@ class _StatusStepper extends StatelessWidget {
             ..._statusOrder.asMap().entries.map((entry) {
               final index = entry.key;
               final status = entry.value;
-              final isDone = index < currentIndex;
-              final isCurrent = index == currentIndex;
-              final isPending = index > currentIndex;
+              final isDone = currentIndex >= 0 && index < currentIndex;
+              final isCurrent = currentIndex >= 0 && index == currentIndex;
+              final isPending = currentIndex < 0 || index > currentIndex;
 
               Color dotColor;
               IconData dotIcon;
@@ -388,10 +405,10 @@ class _StatusStepper extends StatelessWidget {
   }
 }
 
-// ── Emergency Details Card ────────────────────────────────────────────────────
+// â”€â”€ Emergency Details Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _DetailsCard extends StatelessWidget {
-  final IncidentData incident;
+  final Incident incident;
   const _DetailsCard({required this.incident});
 
   @override
@@ -507,10 +524,10 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
-// ── Assignment Card ──────────────────────────────────────────────────────────
+// â”€â”€ Assignment Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _AssignmentCard extends StatelessWidget {
-  final IncidentData incident;
+  final Incident incident;
   const _AssignmentCard({required this.incident});
 
   @override
@@ -552,7 +569,7 @@ class _AssignmentCard extends StatelessWidget {
   }
 }
 
-// ── Error widgets ─────────────────────────────────────────────────────────────
+// â”€â”€ Error widgets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _ErrorBanner extends StatelessWidget {
   final String message;

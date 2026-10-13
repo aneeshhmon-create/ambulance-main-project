@@ -1,10 +1,12 @@
-// lib/ambulance_app/main.dart
+// lib/driver_app/main.dart
 //
 // Entry point for the Ambulance Driver App.
-// Launch with: flutter run -t lib/ambulance_app/main.dart
+// Launch with:
+//   flutter run  --flavor driver -t lib/driver_app/main.dart
+//   flutter build apk --flavor driver -t lib/driver_app/main.dart
 
 import 'package:flutter/material.dart';
-import 'screens/driver_location_screen.dart';
+import 'package:ambulance_app/driver_app/screens/driver_location_screen.dart';
 
 void main() {
   runApp(const AmbulanceDriverApp());
