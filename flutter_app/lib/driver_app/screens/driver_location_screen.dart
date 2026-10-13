@@ -1,4 +1,4 @@
-﻿import 'package:ambulance_app/driver_app/config/api_config.dart';
+import 'package:ambulance_app/driver_app/config/api_config.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -501,7 +501,7 @@ class _DriverLocationScreenState extends State<DriverLocationScreen>
               const SizedBox(height: 24),
               Center(
                 child: Text(
-                  'Updates every $_kIntervalSeconds s  â€¢  PATCH $kAmbulanceBaseUrl/ambulances/{id}/location',
+                  'Updates every $_kIntervalSeconds s  •  PATCH ${DriverApiConfig.baseUrl}/ambulances/{id}/location',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.2),
                     fontSize: 11,

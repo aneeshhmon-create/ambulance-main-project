@@ -1,11 +1,12 @@
 plugins {
     id("com.android.application")
+    id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
 android {
-    namespace = "com.example.ambulance_app"
+    namespace = "com.team19.ambulance"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -14,20 +15,37 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17.toString()
+    }
+
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.ambulance_app"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
-        // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
-        // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
-        // You can force using the value of versionCode by specifying the `-P force-version-code-ignoring-abi=true`
-        // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
+
+    // ── Product Flavors ───────────────────────────────────────────────────────
+    // Two flavors so both APKs can be installed simultaneously on the same device.
+    // Build commands:
+    //   flutter build apk --flavor user   -t lib/user_app/main.dart
+    //   flutter build apk --flavor driver -t lib/driver_app/main.dart
+    flavorDimensions += "app"
+
+    productFlavors {
+        create("user") {
+            dimension = "app"
+            applicationId = "com.team19.ambulance.user"
+            resValue("string", "app_name", "Ambulance User")
+        }
+        create("driver") {
+            dimension = "app"
+            applicationId = "com.team19.ambulance.driver"
+            resValue("string", "app_name", "Ambulance Driver")
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     buildTypes {
         release {
