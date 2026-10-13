@@ -23,18 +23,15 @@ Design decisions
 • vad_filter=True:
     - Strips silence/noise from phone-call audio before inference.
 
-• Language strategy — post-transcription re-run:
-    - First pass: language=None (auto-detect).
-    - If auto-detect returns a non-allowed language (e.g. Tamil for a Malayalam
-      clip — a known large-v3-turbo false positive due to Dravidian acoustic
-      similarity), immediately re-run with language="ml" forced.
-    - This is more reliable than using detect_language() which has API
-      inconsistencies with certain audio formats in faster-whisper 1.x.
-    - Re-run only happens in the false-positive case (~1 extra pass, ~30s).
-    - Allowed languages for this domain: {"ml", "en"} — Kerala emergency dispatch.
+• Language strategy — restricted detection, single pass:
+    - detect_language() probabilities are filtered to {"ml", "en"} (Kerala
+      emergency dispatch), so Hindi/Tamil can never be chosen, and the clip is
+      transcribed exactly once (no ~30 s re-run pass).
 
 • Model loaded ONCE at module level — not per request.
-• GPU float16 if CUDA available, CPU int8 otherwise.
+• Device: CUDA detected via CTranslate2 (no torch needed), float16; falls back to
+  CPU int8 if the GPU libs (cuBLAS/cuDNN) fail to load. Env overrides:
+  WHISPER_MODEL, WHISPER_DEVICE (cpu|cuda). warmup() runs at app startup.
 """
 
 import os
@@ -47,46 +44,94 @@ logger = logging.getLogger(__name__)
 
 
 # ── Model selection ───────────────────────────────────────────────────────────
-# Use locally downloaded full large-v3 model
+# Override with WHISPER_MODEL (a size name like "large-v3" or a local path).
+# Default is large-v3-turbo: ~6x faster than large-v3 with near-identical accuracy.
 _LOCAL_MODEL_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "models", "large-v3")
+    os.path.join(os.path.dirname(__file__), "..", "..", "models", "large-v3-turbo")
 )
-_MODEL_SIZE = _LOCAL_MODEL_DIR if os.path.isdir(_LOCAL_MODEL_DIR) else "large-v3"
+_MODEL_SIZE = os.environ.get("WHISPER_MODEL") or (
+    _LOCAL_MODEL_DIR if os.path.isdir(_LOCAL_MODEL_DIR) else "large-v3-turbo"
+)
+
 
 # ── Device / precision ────────────────────────────────────────────────────────
-def _select_device_and_compute() -> tuple[str, str]:
+def _cuda_available() -> bool:
+    """Ask CTranslate2 directly -- faster-whisper does not need torch."""
     try:
-        import torch
-        if torch.cuda.is_available():
-            logger.info("CUDA detected -- loading '%s' on GPU (float16).", _MODEL_SIZE)
-            return "cuda", "float16"
-    except ImportError:
-        pass
-    logger.info("No GPU -- loading '%s' on CPU (int8).", _MODEL_SIZE)
-    return "cpu", "int8"
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        return False
 
 
-_device, _compute_type = _select_device_and_compute()
+def _load_model() -> tuple[WhisperModel, str, str]:
+    forced = (os.environ.get("WHISPER_DEVICE") or "").lower()
+    if forced != "cpu" and (forced == "cuda" or _cuda_available()):
+        for compute in ("float16", "int8_float16"):
+            try:
+                logger.info("Loading '%s' on GPU (%s) ...", _MODEL_SIZE, compute)
+                return WhisperModel(_MODEL_SIZE, device="cuda", compute_type=compute), "cuda", compute
+            except Exception as exc:  # missing cuDNN/cuBLAS, out of memory, ...
+                logger.warning("GPU load failed (%s: %s).", compute, exc)
+        logger.warning("Falling back to CPU -- transcription will be much slower.")
+    logger.info("Loading '%s' on CPU (int8) ...", _MODEL_SIZE)
+    model = WhisperModel(
+        _MODEL_SIZE,
+        device="cpu",
+        compute_type="int8",
+        cpu_threads=min(os.cpu_count() or 4, 16),
+    )
+    return model, "cpu", "int8"
 
-# ── Module-level model load ───────────────────────────────────────────────────
-logger.info("Loading faster-whisper model '%s' ...", _MODEL_SIZE)
-_model = WhisperModel(_MODEL_SIZE, device=_device, compute_type=_compute_type)
-logger.info("faster-whisper model '%s' ready.", _MODEL_SIZE)
+
+_model, _device, _compute_type = _load_model()
+logger.info("faster-whisper '%s' ready on %s (%s).", _MODEL_SIZE, _device, _compute_type)
+print(f"[STT] model={_MODEL_SIZE!r} device={_device} compute={_compute_type}")
 
 
 # ── Domain constraints ────────────────────────────────────────────────────────
 # Kerala emergency dispatch: callers only speak Malayalam or English.
-# Tamil detection = false positive (acoustic similarity). Always re-run as ml.
 _ALLOWED_LANGUAGES = frozenset({"ml", "en"})
+_DEFAULT_LANGUAGE = "ml"
+
+
+def _pick_language(file_path: str) -> str:
+    """
+    Detect the language among {ml, en} only, so Whisper's guess of Hindi/Tamil
+    (acoustically similar / noisy clips) can never be chosen, and the clip is
+    transcribed exactly once. Costs one encoder pass over the first 30 s.
+    """
+    try:
+        from faster_whisper.audio import decode_audio
+        audio = decode_audio(file_path, sampling_rate=16000)
+        _, _, all_probs = _model.detect_language(audio[: 30 * 16000])
+        probs = {lang: p for lang, p in all_probs if lang in _ALLOWED_LANGUAGES}
+        if probs:
+            return max(probs, key=probs.get)
+    except Exception as exc:
+        logger.warning("[STT] Language detection failed (%s); using '%s'.", exc, _DEFAULT_LANGUAGE)
+    return _DEFAULT_LANGUAGE
+
+
+def warmup() -> None:
+    """Run a tiny dummy inference so CUDA init / kernel load happens at startup."""
+    try:
+        import numpy as np
+        t0 = time.perf_counter()
+        segs, _ = _model.transcribe(np.zeros(16000, dtype=np.float32), language="en", beam_size=1)
+        list(segs)
+        logger.info("[STT] Warm-up done in %.2fs", time.perf_counter() - t0)
+    except Exception as exc:
+        logger.warning("[STT] Warm-up skipped: %s", exc)
 
 
 # ── Shared transcribe call ────────────────────────────────────────────────────
-def _run_transcribe(file_path: str, language: str | None):
+def _run_transcribe(file_path: str, language: str):
     """Single transcribe call with consistent settings."""
     segments, info = _model.transcribe(
         file_path,
         language=language,
-        beam_size=1,                      # greedy: 3-5x faster on CPU
+        beam_size=1,                      # greedy: fastest
         vad_filter=True,                  # strip silence / phone noise
         condition_on_previous_text=False, # prevents hallucination loops
         temperature=0,                    # deterministic, no sampling fallback
@@ -102,10 +147,8 @@ def transcribe_audio(file_path: str) -> dict:
 
     Strategy
     --------
-    1. Auto-detect language (language=None).
-    2. If Whisper picks a language outside {"ml", "en"} (e.g. Tamil as a false
-       positive for Malayalam), re-run immediately with language="ml" forced.
-       This adds ~30 s only in the rare false-positive case.
+    1. Detect language restricted to {"ml", "en"} (never Hindi/Tamil).
+    2. Transcribe once with that language -- no re-run pass.
 
     Parameters
     ----------
@@ -124,23 +167,9 @@ def transcribe_audio(file_path: str) -> dict:
     print(f"[STT] >> Transcription started  -- {time.strftime('%H:%M:%S')}")
     logger.info("[STT] Starting transcription: %s", file_path)
 
-    # ── Pass 1: auto-detect ───────────────────────────────────────────────────
-    transcript, info = _run_transcribe(file_path, language=None)
-    final_language = info.language
-
-    # ── Pass 2 (if needed): re-run with forced Malayalam ─────────────────────
-    if info.language not in _ALLOWED_LANGUAGES:
-        logger.warning(
-            "[STT] Auto-detect chose '%s' (not in allowed set %s). "
-            "Re-running with language='ml'.",
-            info.language, set(_ALLOWED_LANGUAGES),
-        )
-        print(
-            f"[STT] [LANG OVERRIDE] '{info.language}' not allowed "
-            f"-- re-running as 'ml' (Kerala domain)"
-        )
-        transcript, info2 = _run_transcribe(file_path, language="ml")
-        final_language = "ml"
+    final_language = _pick_language(file_path)
+    t_detect = time.perf_counter()
+    transcript, _info = _run_transcribe(file_path, language=final_language)
 
     t_end = time.perf_counter()
     duration = round(t_end - t_start, 2)
@@ -150,8 +179,8 @@ def transcribe_audio(file_path: str) -> dict:
         f"(took {duration}s, lang: {final_language!r})"
     )
     logger.info(
-        "[STT] Done in %.2fs | language=%s | whisper_raw=%s",
-        duration, final_language, info.language,
+        "[STT] Done in %.2fs (lang detect %.2fs) | language=%s",
+        duration, t_detect - t_start, final_language,
     )
 
     return {

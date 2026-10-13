@@ -31,6 +31,7 @@ Race safety                : SELECT ... FOR UPDATE on the incident row inside
 import os
 import shutil
 import tempfile
+import time
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
@@ -321,12 +322,20 @@ def create_incident_from_audio(
             shutil.copyfileobj(audio_file.file, tmp)
             tmp_path = tmp.name
 
+        t0 = time.perf_counter()
+
         # a. Speech to text
         stt_result = transcribe_audio(tmp_path)
         transcript = stt_result.get("transcript", "")
+        t_stt = time.perf_counter()
 
         # b. Severity & department extraction
         extracted = extract_severity(transcript)
+        t_llm = time.perf_counter()
+        logger.info(
+            "[Incidents] Timing: stt=%.2fs extraction=%.2fs",
+            t_stt - t0, t_llm - t_stt,
+        )
 
         # c. & d. Create incident & dispatch
         return _create_incident_core(

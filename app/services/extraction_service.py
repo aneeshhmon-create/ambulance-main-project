@@ -53,13 +53,30 @@ SAFE_FALLBACK: dict[str, Any] = {
 }
 
 # Candidate models in priority order with automatic fallback
+# Fast models only (pro is too slow for a live dispatch flow).
 _CANDIDATE_MODELS = [
-    "gemini-flash-latest",
-    "gemini-flash-lite-latest",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-2.5-pro",
+    "gemini-flash-latest",
 ]
+
+# Per-attempt HTTP timeout (ms) so one slow/hung model can't stall the request.
+_REQUEST_TIMEOUT_MS = 8000
+
+_client: genai.Client | None = None
+_client_key: str | None = None
+
+
+def _get_client(api_key: str) -> genai.Client:
+    """Reuse one client (and its connection pool) across requests."""
+    global _client, _client_key
+    if _client is None or _client_key != api_key:
+        _client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=_REQUEST_TIMEOUT_MS),
+        )
+        _client_key = api_key
+    return _client
 
 
 def _build_prompt(transcript: str) -> str:
@@ -114,7 +131,7 @@ def extract_severity(transcript: str) -> dict[str, Any]:
         return dict(SAFE_FALLBACK)
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = _get_client(api_key)
         prompt = _build_prompt(transcript)
 
         response = None
@@ -127,6 +144,9 @@ def extract_severity(transcript: str) -> dict[str, Any]:
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         temperature=0.1,
+                        max_output_tokens=512,
+                        # Simple extraction: skip "thinking" for speed (2.5-flash/lite only).
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),
                 )
                 if res and res.text:

@@ -18,3 +18,9 @@ faster-whisper==1.1.1
 # ── LLM Extraction & Triage ──────────────────────────────────────────────────
 # Google Gemini API official SDK for extracting structured triage data
 google-genai==1.29.0
+
+# ── Optional: GPU acceleration for Whisper (NVIDIA, CUDA 12) ──────────────────
+# stt_service auto-detects CUDA via CTranslate2 and falls back to CPU if these
+# libraries are missing. Uncomment/install on machines with an NVIDIA GPU:
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12==9.*
