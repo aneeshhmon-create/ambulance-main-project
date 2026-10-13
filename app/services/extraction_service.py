@@ -55,12 +55,12 @@ SAFE_FALLBACK: dict[str, Any] = {
 
 # Candidate models in priority order with automatic fallback
 # Per-attempt HTTP timeout (ms) so one slow/hung model can't stall the request.
-_REQUEST_TIMEOUT_MS = 8000
+_REQUEST_TIMEOUT_MS = 12000  # API minimum deadline is 10s
 
 # Fast models only (pro is too slow for a live dispatch flow).
 _CANDIDATE_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
     "gemini-flash-latest",
 ]
 
