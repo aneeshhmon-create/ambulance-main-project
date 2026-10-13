@@ -7,8 +7,7 @@ Flow
 ────
 1. transcribe_only():   audio -> Malayalam/English text   (gemini-3.5-transcribe,
                         language hints ml-IN + en-IN, "smart" mode)
-2. translate_to_english(): text -> fluent English          (gemini-3.5-flash-lite;
-                        3.8-flash spends 8-15s thinking on this tiny task)
+2. translate_to_english(): text -> fluent English          (gemini-3.8-flash;
 
 The audio is sent inline (base64), so there is no upload / delete round trip.
 Nothing runs locally: no GPU, ffmpeg or model download needed.
@@ -26,10 +25,10 @@ from app.services.gemini_client import get_client
 logger = logging.getLogger(__name__)
 
 TRANSCRIBE_MODEL = os.environ.get("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe")
-TRANSLATE_MODEL = os.environ.get("GEMINI_TRANSLATE_MODEL", "gemini-3.5-flash-lite")
+TRANSLATE_MODEL = os.environ.get("GEMINI_TRANSLATE_MODEL", "gemini-3.8-flash")
 
 _TRANSCRIBE_TIMEOUT_S = 30.0
-_TRANSLATE_TIMEOUT_S = 20.0
+_TRANSLATE_TIMEOUT_S = 30.0
 
 # File extension -> mime type accepted by the interactions API.
 _MIME_BY_EXT = {
