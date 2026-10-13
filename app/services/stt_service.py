@@ -7,7 +7,7 @@ Flow
 ────
 1. transcribe_only():   audio -> Malayalam/English text   (gemini-3.5-transcribe,
                         language hints ml-IN + en-IN, "smart" mode)
-2. translate_to_english(): text -> fluent English          (gemini-3.8-flash;
+2. translate_to_english(): text -> fluent English          (gemini-3.8-flash)
 
 The audio is sent inline (base64), so there is no upload / delete round trip.
 Nothing runs locally: no GPU, ffmpeg or model download needed.
