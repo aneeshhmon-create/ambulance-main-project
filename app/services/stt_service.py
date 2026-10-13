@@ -1,241 +1,131 @@
 """
 app/services/stt_service.py
 ───────────────────────────
-Speech-to-text service powered by faster-whisper.
+Speech-to-text via Gemini (replaces the local Whisper pipeline).
 
-Design decisions
-────────────────
-• Model: "large-v3-turbo"
-    - Distilled from large-v3: ~6x faster than large-v3, ~same disk size as medium.
-    - Dramatically better Malayalam accuracy vs. medium (which has very limited
-      Dravidian language data and frequently hallucinates on Malayalam).
+Flow
+────
+1. transcribe_only():   audio -> Malayalam/English text   (gemini-3.5-transcribe,
+                        language hints ml-IN + en-IN, "smart" mode)
+2. translate_to_english(): text -> fluent English          (gemini-3.8-flash)
 
-• beam_size=1 (greedy decoding):
-    - 3-5x faster than beam_size=5 on CPU with negligible accuracy loss.
+The audio is sent inline (base64), so there is no upload / delete round trip.
+Nothing runs locally: no GPU, ffmpeg or model download needed.
 
-• condition_on_previous_text=False:
-    - Prevents Whisper feeding its own hallucinated output back as context,
-      which caused 3-minute runaway transcriptions on Malayalam audio.
-
-• temperature=0:
-    - Deterministic, no sampling fallback. Faster.
-
-• vad_filter=True:
-    - Strips silence/noise from phone-call audio before inference.
-
-• Language strategy — restricted detection, single pass:
-    - detect_language() probabilities are filtered to {"ml", "en"} (Kerala
-      emergency dispatch), so Hindi/Tamil can never be chosen, and the clip is
-      transcribed exactly once (no ~30 s re-run pass).
-
-• Model loaded ONCE at module level — not per request.
-• Device: CUDA detected via CTranslate2 (no torch needed), float16; falls back to
-  CPU int8 if the GPU libs (cuBLAS/cuDNN) fail to load. Env overrides:
-  WHISPER_MODEL, WHISPER_DEVICE (cpu|cuda). warmup() runs at app startup.
+Env overrides: GEMINI_TRANSCRIBE_MODEL, GEMINI_TRANSLATE_MODEL.
 """
 
+import base64
+import logging
 import os
 import time
-import logging
-import subprocess
 
-import numpy as np
-
-from faster_whisper import WhisperModel
+from app.services.gemini_client import get_client
 
 logger = logging.getLogger(__name__)
 
+TRANSCRIBE_MODEL = os.environ.get("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe")
+TRANSLATE_MODEL = os.environ.get("GEMINI_TRANSLATE_MODEL", "gemini-3.8-flash")
 
-# ── Model selection ───────────────────────────────────────────────────────────
-# Override with WHISPER_MODEL (a size name like "large-v3" or a local path).
-# Default is large-v3-turbo: ~6x faster than large-v3 with near-identical accuracy.
-_LOCAL_MODEL_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "models", "large-v3-turbo")
-)
-_MODEL_SIZE = os.environ.get("WHISPER_MODEL") or (
-    _LOCAL_MODEL_DIR if os.path.isdir(_LOCAL_MODEL_DIR) else "large-v3-turbo"
-)
+_TRANSCRIBE_TIMEOUT_S = 30.0
+_TRANSLATE_TIMEOUT_S = 15.0
 
-
-# ── Device / precision ────────────────────────────────────────────────────────
-def _cuda_available() -> bool:
-    """Ask CTranslate2 directly -- faster-whisper does not need torch."""
-    try:
-        import ctranslate2
-        return ctranslate2.get_cuda_device_count() > 0
-    except Exception:
-        return False
-
-
-def _preload_cuda_libs() -> None:
-    """
-    Load cuBLAS/cuDNN shipped by the nvidia-*-cu12 pip packages, so no manual
-    LD_LIBRARY_PATH is needed. Silently does nothing if they aren't installed.
-    """
-    import ctypes
-    import glob
-    import importlib
-
-    for mod, pattern in (("nvidia.cublas.lib", "libcublas*.so*"), ("nvidia.cudnn.lib", "libcudnn*.so*")):
-        try:
-            paths = list(importlib.import_module(mod).__path__)
-        except Exception:
-            continue
-        for d in paths:
-            # cublasLt / cudnn sub-libs first-load order is handled by RTLD_GLOBAL + lazy lookup
-            for so in sorted(glob.glob(os.path.join(d, pattern))):
-                try:
-                    ctypes.CDLL(so, mode=ctypes.RTLD_GLOBAL)
-                except OSError:
-                    pass
+# File extension -> mime type accepted by the interactions API.
+_MIME_BY_EXT = {
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/opus",
+    ".m4a": "audio/m4a",
+    ".mp4": "audio/m4a",
+    ".aac": "audio/aac",
+    ".mp3": "audio/mp3",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".webm": "audio/webm",
+}
 
 
-def _gpu_selftest(model: WhisperModel) -> None:
-    """Tiny inference: model load succeeds even if cuBLAS/cuDNN are missing."""
-    segs, _ = model.transcribe(np.zeros(16000, dtype=np.float32), language="en", beam_size=1)
-    list(segs)
+def _has_malayalam(text: str) -> bool:
+    return any("ഀ" <= ch <= "ൿ" for ch in text)
 
 
-def _load_model() -> tuple[WhisperModel, str, str]:
-    forced = (os.environ.get("WHISPER_DEVICE") or "").lower()
-    if forced != "cpu" and (forced == "cuda" or _cuda_available()):
-        _preload_cuda_libs()
-        for compute in ("float16", "int8_float16"):
-            try:
-                logger.info("Loading '%s' on GPU (%s) ...", _MODEL_SIZE, compute)
-                model = WhisperModel(_MODEL_SIZE, device="cuda", compute_type=compute)
-                _gpu_selftest(model)
-                return model, "cuda", compute
-            except Exception as exc:  # missing cuDNN/cuBLAS, out of memory, ...
-                logger.warning("GPU load failed (%s: %s).", compute, exc)
-        logger.warning("Falling back to CPU -- transcription will be much slower.")
-    logger.info("Loading '%s' on CPU (int8) ...", _MODEL_SIZE)
-    model = WhisperModel(
-        _MODEL_SIZE,
-        device="cpu",
-        compute_type="int8",
-        cpu_threads=min(os.cpu_count() or 4, 16),
+def _transcribe_call(audio_b64: str, mime: str, language_codes: list[str]) -> str:
+    res = get_client().interactions.create(
+        model=TRANSCRIBE_MODEL,
+        input={"type": "audio", "data": audio_b64, "mime_type": mime},
+        generation_config={
+            "transcription_config": {"language_codes": language_codes, "mode": "smart"},
+        },
+        timeout=_TRANSCRIBE_TIMEOUT_S,
     )
-    return model, "cpu", "int8"
+    return (res.output_text or "").strip()
 
 
-_model, _device, _compute_type = _load_model()
-logger.info("faster-whisper '%s' ready on %s (%s).", _MODEL_SIZE, _device, _compute_type)
-print(f"[STT] model={_MODEL_SIZE!r} device={_device} compute={_compute_type}")
-
-
-# ── Domain constraints ────────────────────────────────────────────────────────
-# Kerala emergency dispatch: callers only speak Malayalam or English.
-_ALLOWED_LANGUAGES = frozenset({"ml", "en"})
-_DEFAULT_LANGUAGE = "ml"
-
-
-def _decode_audio(file_path: str) -> np.ndarray:
+def transcribe_only(file_path: str) -> dict:
     """
-    Decode any ffmpeg-readable file to 16 kHz mono float32.
+    Transcribe audio in its spoken language (Malayalam script for Malayalam).
 
-    Uses the ffmpeg CLI directly: faster-whisper 1.1.1's built-in decoder calls
-    av.open(metadata_errors=...), which newer PyAV releases reject. Decoding
-    once here also avoids decoding twice (language detection + transcription).
+    Returns: {"original_transcript": str, "detected_language": "ml"|"en",
+              "duration_seconds": float}
     """
-    proc = subprocess.run(
-        ["ffmpeg", "-nostdin", "-v", "error", "-i", file_path,
-         "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed to decode audio: {proc.stderr.decode(errors='replace')[:300]}")
-    return np.frombuffer(proc.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    t0 = time.perf_counter()
+    ext = os.path.splitext(file_path)[1].lower()
+    mime = _MIME_BY_EXT.get(ext, "audio/ogg")
+    with open(file_path, "rb") as fh:
+        audio_b64 = base64.b64encode(fh.read()).decode("ascii")
 
-
-def _pick_language(audio: np.ndarray) -> str:
-    """
-    Detect the language among {ml, en} only, so Whisper's guess of Hindi/Tamil
-    (acoustically similar / noisy clips) can never be chosen, and the clip is
-    transcribed exactly once. Costs one encoder pass over the first 30 s.
-    """
     try:
-        _, _, all_probs = _model.detect_language(audio[: 30 * 16000])
-        probs = {lang: p for lang, p in all_probs if lang in _ALLOWED_LANGUAGES}
-        if probs:
-            return max(probs, key=probs.get)
+        text = _transcribe_call(audio_b64, mime, ["ml-IN", "en-IN"])
     except Exception as exc:
-        logger.warning("[STT] Language detection failed (%s); using '%s'.", exc, _DEFAULT_LANGUAGE)
-    return _DEFAULT_LANGUAGE
+        # Some deployments may only accept a single language code.
+        logger.warning("[STT] ml-IN+en-IN failed (%s); retrying with ml-IN only.", exc)
+        text = _transcribe_call(audio_b64, mime, ["ml-IN"])
+
+    duration = round(time.perf_counter() - t0, 2)
+    lang = "ml" if _has_malayalam(text) else "en"
+    logger.info("[STT] Gemini transcription done in %.2fs (lang=%s)", duration, lang)
+    print(f"[STT] Gemini transcription took {duration}s (lang={lang})")
+    return {"original_transcript": text, "detected_language": lang, "duration_seconds": duration}
 
 
-def warmup() -> None:
-    """Run a tiny dummy inference so CUDA init / kernel load happens at startup."""
+def translate_to_english(text: str) -> str:
+    """Translate to English. Returns the input unchanged if it has no Malayalam or on failure."""
+    if not text or not _has_malayalam(text):
+        return text
+    t0 = time.perf_counter()
     try:
-        t0 = time.perf_counter()
-        segs, _ = _model.transcribe(np.zeros(16000, dtype=np.float32), language="en", beam_size=1)
-        list(segs)
-        logger.info("[STT] Warm-up done in %.2fs", time.perf_counter() - t0)
+        res = get_client().interactions.create(
+            model=TRANSLATE_MODEL,
+            input=(
+                "You are a professional Malayalam-to-English translator.\n"
+                "Translate the following Malayalam text into fluent, natural English.\n"
+                "Keep the meaning accurate and preserve the tone.\n"
+                "Provide ONLY the English translation, nothing else.\n\n"
+                f"Malayalam text:\n{text}"
+            ),
+            timeout=_TRANSLATE_TIMEOUT_S,
+        )
+        english = (res.output_text or "").strip()
+        logger.info("[STT] Translation done in %.2fs", time.perf_counter() - t0)
+        return english or text
     except Exception as exc:
-        logger.warning("[STT] Warm-up skipped: %s", exc)
+        logger.warning("[STT] Translation failed (%s); keeping original transcript.", exc)
+        return text
 
 
-# ── Shared transcribe call ────────────────────────────────────────────────────
-def _run_transcribe(audio: np.ndarray, language: str):
-    """Single transcribe call with consistent settings."""
-    segments, info = _model.transcribe(
-        audio,
-        language=language,
-        beam_size=1,                      # greedy: fastest
-        vad_filter=True,                  # strip silence / phone noise
-        condition_on_previous_text=False, # prevents hallucination loops
-        temperature=0,                    # deterministic, no sampling fallback
-    )
-    transcript = " ".join(seg.text.strip() for seg in segments)
-    return transcript, info
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
 def transcribe_audio(file_path: str) -> dict:
     """
-    Transcribe an audio file and return the transcript plus detected language.
+    Transcribe + translate (sequential). Kept for the test endpoint / scripts.
 
-    Strategy
-    --------
-    1. Detect language restricted to {"ml", "en"} (never Hindi/Tamil).
-    2. Transcribe once with that language -- no re-run pass.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the audio file. Supports WAV, MP3, M4A, OGG, FLAC, and any
-        format ffmpeg can decode.
-
-    Returns
-    -------
-    dict
-        transcript        (str)   -- full transcribed text.
-        detected_language (str)   -- "ml" or "en" (corrected if needed).
-        duration_seconds  (float) -- wall-clock transcription time.
+    Returns: transcript (English), original_transcript, detected_language,
+             duration_seconds.
     """
-    t_start = time.perf_counter()
-    print(f"[STT] >> Transcription started  -- {time.strftime('%H:%M:%S')}")
-    logger.info("[STT] Starting transcription: %s", file_path)
-
-    audio = _decode_audio(file_path)
-    final_language = _pick_language(audio)
-    t_detect = time.perf_counter()
-    transcript, _info = _run_transcribe(audio, language=final_language)
-
-    t_end = time.perf_counter()
-    duration = round(t_end - t_start, 2)
-
-    print(
-        f"[STT] [DONE] Transcription finished -- {time.strftime('%H:%M:%S')} "
-        f"(took {duration}s, lang: {final_language!r})"
-    )
-    logger.info(
-        "[STT] Done in %.2fs (lang detect %.2fs) | language=%s",
-        duration, t_detect - t_start, final_language,
-    )
-
+    t0 = time.perf_counter()
+    result = transcribe_only(file_path)
+    english = translate_to_english(result["original_transcript"])
     return {
-        "transcript": transcript,
-        "detected_language": final_language,
-        "duration_seconds": duration,
+        "transcript": english,
+        "original_transcript": result["original_transcript"],
+        "detected_language": result["detected_language"],
+        "duration_seconds": round(time.perf_counter() - t0, 2),
     }

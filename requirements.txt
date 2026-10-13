@@ -8,19 +8,7 @@ python-dotenv==1.2.3
 pydantic-settings==2.15.0
 alembic==1.20.0
 
-# ── Speech-to-Text ────────────────────────────────────────────────────────────
-# faster-whisper: CTranslate2-based Whisper implementation.
-# 2-4× faster than openai-whisper on CPU, lower RAM, no PyTorch dependency.
-# Trade-off: uses a different Python API than openai-whisper, but for a plain
-# transcription service this is negligible. Preferred when GPU is not guaranteed.
-faster-whisper==1.1.1
-
-# ── LLM Extraction & Triage ──────────────────────────────────────────────────
-# Google Gemini API official SDK for extracting structured triage data
-google-genai==1.29.0
-
-# ── Optional: GPU acceleration for Whisper (NVIDIA, CUDA 12) ──────────────────
-# stt_service auto-detects CUDA via CTranslate2 and falls back to CPU if these
-# libraries are missing. Uncomment/install on machines with an NVIDIA GPU:
-# nvidia-cublas-cu12
-# nvidia-cudnn-cu12==9.*
+# ── Speech-to-Text + LLM Extraction (all Gemini) ─────────────────────────────
+# google-genai 2.x provides the Interactions API used for transcription
+# (gemini-3.5-transcribe) and translation; also used for triage extraction.
+google-genai==2.30.0

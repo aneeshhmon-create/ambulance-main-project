@@ -20,8 +20,9 @@ import logging
 from typing import Any
 
 from dotenv import load_dotenv
-from google import genai
 from google.genai import types
+
+from app.services.gemini_client import get_api_key, get_client
 
 load_dotenv()
 load_dotenv(os.path.expanduser("~/.env"))
@@ -53,31 +54,15 @@ SAFE_FALLBACK: dict[str, Any] = {
 }
 
 # Candidate models in priority order with automatic fallback
+# Per-attempt HTTP timeout (ms) so one slow/hung model can't stall the request.
+_REQUEST_TIMEOUT_MS = 8000
+
 # Fast models only (pro is too slow for a live dispatch flow).
 _CANDIDATE_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemini-flash-latest",
 ]
-
-# Per-attempt HTTP timeout (ms) so one slow/hung model can't stall the request.
-_REQUEST_TIMEOUT_MS = 8000
-
-_client: genai.Client | None = None
-_client_key: str | None = None
-
-
-def _get_client(api_key: str) -> genai.Client:
-    """Reuse one client (and its connection pool) across requests."""
-    global _client, _client_key
-    if _client is None or _client_key != api_key:
-        _client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=_REQUEST_TIMEOUT_MS),
-        )
-        _client_key = api_key
-    return _client
-
 
 def _build_prompt(transcript: str) -> str:
     departments_str = ", ".join(f'"{d}"' for d in VALID_DEPARTMENTS)
@@ -122,8 +107,7 @@ def extract_severity(transcript: str) -> dict[str, Any]:
         logger.warning("[Extraction] Empty transcript received. Returning fallback.")
         return dict(SAFE_FALLBACK)
 
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
+    if not get_api_key():
         logger.warning(
             "[Extraction] Neither GEMINI_API_KEY nor GOOGLE_API_KEY found in environment. "
             "Returning safe fallback."
@@ -131,7 +115,7 @@ def extract_severity(transcript: str) -> dict[str, Any]:
         return dict(SAFE_FALLBACK)
 
     try:
-        client = _get_client(api_key)
+        client = get_client()
         prompt = _build_prompt(transcript)
 
         response = None
@@ -145,6 +129,7 @@ def extract_severity(transcript: str) -> dict[str, Any]:
                         response_mime_type="application/json",
                         temperature=0.1,
                         max_output_tokens=512,
+                        http_options=types.HttpOptions(timeout=_REQUEST_TIMEOUT_MS),
                         # Simple extraction: skip "thinking" for speed (2.5-flash/lite only).
                         thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),

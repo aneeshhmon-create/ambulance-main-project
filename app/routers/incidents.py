@@ -32,6 +32,7 @@ import os
 import shutil
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
@@ -45,7 +46,7 @@ from app.models.ambulance import Ambulance
 from app.schemas.incident import IncidentCreate, IncidentOut, BroadcastOut
 from app.schemas.ambulance import AmbulanceOut
 from app.schemas.hospital import LocationSchema
-from app.services.stt_service import transcribe_audio
+from app.services.stt_service import transcribe_only, translate_to_english
 from app.services.extraction_service import extract_severity
 
 logger = logging.getLogger(__name__)
@@ -324,16 +325,21 @@ def create_incident_from_audio(
 
         t0 = time.perf_counter()
 
-        # a. Speech to text
-        stt_result = transcribe_audio(tmp_path)
-        transcript = stt_result.get("transcript", "")
+        # a. Speech to text (Gemini): transcript in the spoken language
+        stt_result = transcribe_only(tmp_path)
+        original = stt_result.get("original_transcript", "")
         t_stt = time.perf_counter()
 
-        # b. Severity & department extraction
-        extracted = extract_severity(transcript)
+        # b. English translation and severity extraction run in parallel
+        #    (the extraction prompt understands Malayalam directly)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_translate = pool.submit(translate_to_english, original)
+            f_extract = pool.submit(extract_severity, original)
+            transcript = f_translate.result()
+            extracted = f_extract.result()
         t_llm = time.perf_counter()
         logger.info(
-            "[Incidents] Timing: stt=%.2fs extraction=%.2fs",
+            "[Incidents] Timing: transcribe=%.2fs translate+extract=%.2fs",
             t_stt - t0, t_llm - t_stt,
         )
 

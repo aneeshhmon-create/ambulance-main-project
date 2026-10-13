@@ -9,7 +9,6 @@ Application entry-point.
 - On startup, ensures the PostGIS extension exists in the database.
 """
 
-import asyncio
 import time
 from contextlib import asynccontextmanager
 
@@ -35,12 +34,6 @@ async def lifespan(app: FastAPI):
         print("[OK] PostGIS extension and users sequence ensured.")
     except Exception as exc:
         print(f"[WARNING] Startup DB setup note: {exc}")
-    # Warm up Whisper (CUDA init / kernel load) so the first real call isn't slow
-    try:
-        from app.services.stt_service import warmup
-        await asyncio.to_thread(warmup)
-    except Exception as exc:
-        print(f"[WARNING] STT warm-up skipped: {exc}")
     yield
     # Shutdown logic (e.g. close connection pools) would go here
 
