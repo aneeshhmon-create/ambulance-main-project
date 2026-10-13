@@ -58,9 +58,11 @@ SAFE_FALLBACK: dict[str, Any] = {
 _REQUEST_TIMEOUT_MS = 12000  # API minimum deadline is 10s
 
 # Fast models only (pro is too slow for a live dispatch flow).
+# Free tier allows only ~20 requests/day *per model*, so lite goes first and the
+# others act as fallbacks (also on 429/503).
 _CANDIDATE_MODELS = [
-    "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
     "gemini-flash-latest",
 ]
 
@@ -122,20 +124,15 @@ def extract_severity(transcript: str) -> dict[str, Any]:
         last_error = None
         for model_name in _CANDIDATE_MODELS:
             try:
-                res = client.models.generate_content(
+                res = client.interactions.create(
                     model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1,
-                        max_output_tokens=512,
-                        http_options=types.HttpOptions(timeout=_REQUEST_TIMEOUT_MS),
-                        # Simple extraction: skip "thinking" for speed (2.5-flash/lite only).
-                        thinking_config=types.ThinkingConfig(thinking_budget=0),
-                    ),
+                    input=prompt,
+                    generation_config={"temperature": 0.1, "thinking_level": "low"},
+                    timeout=_REQUEST_TIMEOUT_MS / 1000,
                 )
-                if res and res.text:
-                    response = res
+                text = res.output_text
+                if text:
+                    response = text
                     logger.info("[Extraction] Successfully used model: %s", model_name)
                     break
             except Exception as e:
@@ -145,10 +142,10 @@ def extract_severity(transcript: str) -> dict[str, Any]:
                     model_name, e,
                 )
 
-        if not response or not response.text:
+        if not response:
             raise RuntimeError(f"All candidate models failed. Last error: {last_error}")
 
-        raw_text = response.text or ""
+        raw_text = response
         # Clean any potential backticks or whitespace
         cleaned = raw_text.strip()
         if cleaned.startswith("```json"):
