@@ -25,7 +25,10 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.base import Base
 from app.db import get_db
-from app.main import app
+
+# Mock WhisperModel before app.main import to prevent remote HuggingFace downloads during unit tests
+with patch("faster_whisper.WhisperModel", MagicMock()):
+    from app.main import app
 from app.models.driver import Driver
 from app.models.ambulance import Ambulance
 from app.models.ambulance_driver import AmbulanceDriver
@@ -38,10 +41,20 @@ from app.core import config as config_module
 
 SQLALCHEMY_DATABASE_URL = "sqlite://"
 
+from sqlalchemy.pool import StaticPool
+from sqlalchemy import event
+
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
 )
+
+@event.listens_for(engine, "connect")
+def connect(dbapi_connection, connection_record):
+    dbapi_connection.create_function("ST_GeogFromText", 1, lambda x: x)
+    dbapi_connection.create_function("ST_AsBinary", 1, lambda x: x)
+    dbapi_connection.create_function("AsBinary", 1, lambda x: x)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -53,15 +66,29 @@ def override_get_db():
         db.close()
 
 
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.types import ARRAY
+from geoalchemy2.types import Geography
+
+@compiles(ARRAY, "sqlite")
+def compile_array_sqlite(type_, compiler, **kw):
+    return "TEXT"
+
+@compiles(Geography, "sqlite")
+def compile_geography_sqlite(type_, compiler, **kw):
+    return "TEXT"
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
+_TEST_TABLES = [Driver.__table__, Ambulance.__table__, AmbulanceDriver.__table__]
 
 @pytest.fixture(autouse=True)
 def setup_db():
-    """Create all tables before each test; drop after."""
-    Base.metadata.create_all(bind=engine)
+    """Create driver auth tables before each test; drop after."""
+    Base.metadata.create_all(bind=engine, tables=_TEST_TABLES)
     app.dependency_overrides[get_db] = override_get_db
     yield
-    Base.metadata.drop_all(bind=engine)
+    Base.metadata.drop_all(bind=engine, tables=_TEST_TABLES)
     app.dependency_overrides.clear()
 
 
@@ -127,18 +154,6 @@ def _mock_google_token(email: str, email_verified: bool = True, name: str = "Tes
 class TestGoogleSignIn:
     def test_registered_driver_gets_token(self, client, active_driver):
         """Registered active driver → 200 with access_token and driver profile."""
-        with patch("app.routers.auth.settings") as mock_settings, \
-             patch("app.routers.auth.google_id_token") as mock_verify:
-
-            mock_settings.GOOGLE_CLIENT_ID = "fake-client-id"
-            mock_settings.ALLOW_DEV_LOGIN = False
-
-            # Inject google module mock
-            import app.routers.auth as auth_module
-            with patch.object(auth_module, "_google_verify", create=True):
-                pass
-
-        # Simpler: patch the entire verify call via import path
         with patch("app.routers.auth.settings") as mock_cfg:
             mock_cfg.GOOGLE_CLIENT_ID = "fake-client-id"
             mock_cfg.ALLOW_DEV_LOGIN = False
