@@ -159,6 +159,46 @@ class _AuthPageState extends State<AuthPage> {
     }
   }
 
+  Future<void> _handleDevLogin(String email) async {
+    setState(() {
+      _isActionLoading = true;
+      _errorMessage = null;
+      _isNotRegisteredError = false;
+    });
+
+    try {
+      final driver = await AuthService.devSignIn(email);
+      if (!mounted) return;
+      _driver = driver;
+      await _loadAmbulances();
+    } on NotRegisteredDriverException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isActionLoading = false;
+        _errorMessage = e.message;
+        _isNotRegisteredError = true;
+      });
+    } on NetworkException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isActionLoading = false;
+        _errorMessage = e.message;
+      });
+    } on ServerException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isActionLoading = false;
+        _errorMessage = 'Server error (${e.statusCode}): ${e.message}';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isActionLoading = false;
+        _errorMessage = 'An unexpected error occurred: $e';
+      });
+    }
+  }
+
   Future<void> _handleSignOut() async {
     setState(() {
       _isActionLoading = true;
@@ -369,6 +409,170 @@ class _AuthPageState extends State<AuthPage> {
                   ],
                 ),
               ),
+
+            const SizedBox(height: 32),
+
+            // ── Dev Login Bypass ──────────────────────────────────────────────
+            Row(
+              children: [
+                Expanded(child: Divider(color: theme.colorScheme.outlineVariant)),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12.0),
+                  child: Text(
+                    'DEVELOPMENT MODE',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      letterSpacing: 1.2,
+                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.outline,
+                    ),
+                  ),
+                ),
+                Expanded(child: Divider(color: theme.colorScheme.outlineVariant)),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Card(
+              elevation: 0,
+              color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(
+                  color: theme.colorScheme.outlineVariant.withValues(alpha: 0.6),
+                ),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.developer_mode_rounded,
+                          size: 20,
+                          color: theme.colorScheme.primary,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Quick Dev Login',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Spacer(),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primaryContainer,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            'Bypass Google',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.onPrimaryContainer,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 10,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Select a pre-seeded demo driver to authenticate directly with PostgreSQL:',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _buildDevDriverTile(
+                      name: 'Ramesh Kumar',
+                      email: 'driver1@example.com',
+                      details: '2 Ambulances (KL-07-AE-1234, KL-07-AE-5678)',
+                      theme: theme,
+                    ),
+                    const SizedBox(height: 8),
+                    _buildDevDriverTile(
+                      name: 'Suresh Nair',
+                      email: 'driver2@example.com',
+                      details: '1 Ambulance (KL-01-BE-1111)',
+                      theme: theme,
+                    ),
+                    const SizedBox(height: 8),
+                    _buildDevDriverTile(
+                      name: 'Anand V',
+                      email: 'driver3@example.com',
+                      details: '1 Ambulance (KL-01-BE-2222)',
+                      theme: theme,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDevDriverTile({
+    required String name,
+    required String email,
+    required String details,
+    required ThemeData theme,
+  }) {
+    return InkWell(
+      onTap: _isActionLoading ? null : () => _handleDevLogin(email),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: theme.colorScheme.outlineVariant),
+        ),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: theme.colorScheme.primaryContainer,
+              child: Text(
+                name[0],
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: theme.colorScheme.onPrimaryContainer,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    details,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.arrow_forward_ios_rounded,
+              size: 14,
+              color: theme.colorScheme.primary,
+            ),
           ],
         ),
       ),

@@ -59,12 +59,12 @@ class AuthService {
   static const _storage = FlutterSecureStorage();
 
   static GoogleSignIn _buildGoogleSignIn() {
+    final clientId = DriverApiConfig.googleServerClientId.isNotEmpty
+        ? DriverApiConfig.googleServerClientId
+        : null;
     return GoogleSignIn(
-      // serverClientId tells the plugin to request an ID token (server auth code)
-      // that our backend can verify with google.oauth2.id_token.verify_oauth2_token.
-      serverClientId: DriverApiConfig.googleServerClientId.isNotEmpty
-          ? DriverApiConfig.googleServerClientId
-          : null,
+      clientId: kIsWeb ? clientId : null,
+      serverClientId: clientId,
       scopes: ['email', 'profile'],
     );
   }
@@ -72,14 +72,13 @@ class AuthService {
   // ── Google sign-in ──────────────────────────────────────────────────────────
 
   /// Triggers the Google sign-in flow and exchanges the ID token for our JWT.
-  ///
-  /// Returns the [DriverModel] for the signed-in driver.
-  /// Throws:
-  ///   - [NotRegisteredDriverException] — email not in drivers table (403)
-  ///   - [NetworkException]             — no connectivity or server unreachable
-  ///   - [ServerException]              — unexpected backend error
-  ///   - returns null silently if the user cancelled the sign-in dialog
   static Future<DriverModel?> signInWithGoogle() async {
+    if (kIsWeb && DriverApiConfig.googleServerClientId.isEmpty) {
+      throw const NetworkException(
+        'Google Client ID is not set. Launch with --dart-define=GOOGLE_SERVER_CLIENT_ID=... or use Quick Dev Login below.',
+      );
+    }
+
     final googleSignIn = _buildGoogleSignIn();
 
     GoogleSignInAccount? account;
@@ -144,6 +143,49 @@ class AuthService {
     if (response.statusCode != 200) {
       throw ServerException(response.statusCode,
           _parseErrorDetail(response) ?? 'Unexpected error');
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    final jwt = body['access_token'] as String;
+    final driverJson = body['driver'] as Map<String, dynamic>;
+    final driver = DriverModel.fromJson(driverJson);
+
+    // Persist token and profile
+    await _storage.write(key: _kJwtKey, value: jwt);
+    await _saveDriverProfile(driver);
+
+    return driver;
+  }
+
+  /// POST /auth/dev-login — development only, bypasses Google.
+  static Future<DriverModel> devSignIn(String email) async {
+    final uri = Uri.parse('${DriverApiConfig.baseUrl}/auth/dev-login');
+    http.Response response;
+    try {
+      response = await http
+          .post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'email': email}),
+          )
+          .timeout(const Duration(seconds: 15));
+    } catch (e) {
+      throw NetworkException('Cannot reach server: $e');
+    }
+
+    if (response.statusCode == 403) {
+      throw const NotRegisteredDriverException();
+    }
+    if (response.statusCode == 404) {
+      throw const NetworkException(
+        'Dev login is disabled on server (ALLOW_DEV_LOGIN=false).',
+      );
+    }
+    if (response.statusCode != 200) {
+      throw ServerException(
+        response.statusCode,
+        _parseErrorDetail(response) ?? 'Unexpected error',
+      );
     }
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
