@@ -11,6 +11,8 @@ from app.models.hospital import Hospital
 from app.models.ambulance import Ambulance
 from app.models.incident import Incident
 from app.models.incident_broadcast import IncidentBroadcast
+from app.models.driver import Driver
+from app.models.ambulance_driver import AmbulanceDriver
 
 __all__ = [
     "User",
@@ -18,4 +20,6 @@ __all__ = [
     "Ambulance",
     "Incident",
     "IncidentBroadcast",
+    "Driver",
+    "AmbulanceDriver",
 ]

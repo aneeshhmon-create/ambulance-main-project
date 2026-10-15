@@ -132,8 +132,8 @@ def _build_incident_out(
             amb_loc = _ambulance_location(amb.id, db)
             ambulance_out = AmbulanceOut(
                 id=amb.id,
-                driver_name=amb.driver_name,
-                driver_phone=amb.driver_phone,
+                registration_number=amb.registration_number,
+                vehicle_type=amb.vehicle_type,
                 location=amb_loc,
                 is_available=amb.is_available,
             )

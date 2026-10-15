@@ -62,8 +62,8 @@ def _ambulance_orm_to_out(a: Ambulance, db: Session) -> AmbulanceOut:
 
     return AmbulanceOut(
         id=a.id,
-        driver_name=a.driver_name,
-        driver_phone=a.driver_phone,
+        registration_number=a.registration_number,
+        vehicle_type=a.vehicle_type,
         location=loc,
         is_available=a.is_available,
     )
@@ -73,10 +73,21 @@ def _ambulance_orm_to_out(a: Ambulance, db: Session) -> AmbulanceOut:
 
 @router.post("", response_model=AmbulanceOut, status_code=201, summary="Register an ambulance")
 def create_ambulance(body: AmbulanceCreate, db: Session = Depends(get_db)):
-    """Register a new ambulance with driver details and starting location."""
+    """Register a new ambulance with its registration number, type and starting location."""
+    # Check for duplicate registration number
+    existing = db.execute(
+        text("SELECT id FROM ambulances WHERE registration_number = :reg"),
+        {"reg": body.registration_number},
+    ).fetchone()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ambulance with registration number '{body.registration_number}' already exists.",
+        )
+
     ambulance = Ambulance(
-        driver_name=body.driver_name,
-        driver_phone=body.driver_phone,
+        registration_number=body.registration_number,
+        vehicle_type=body.vehicle_type,
         location=_wkt_point(body.location.lat, body.location.lng),
     )
     db.add(ambulance)
@@ -96,7 +107,7 @@ def list_ambulances(
     """Return a paginated list of all ambulances."""
     rows = db.execute(
         text(
-            "SELECT a.id, a.driver_name, a.driver_phone, a.is_available, "
+            "SELECT a.id, a.registration_number, a.vehicle_type, a.is_available, "
             "       ST_Y(a.location::geometry) AS lat, "
             "       ST_X(a.location::geometry) AS lng "
             "FROM ambulances a "
@@ -109,8 +120,8 @@ def list_ambulances(
     return [
         AmbulanceOut(
             id=r.id,
-            driver_name=r.driver_name,
-            driver_phone=r.driver_phone,
+            registration_number=r.registration_number,
+            vehicle_type=r.vehicle_type,
             location=LocationSchema(lat=r.lat, lng=r.lng) if r.lat is not None else None,
             is_available=r.is_available,
         )
@@ -139,7 +150,7 @@ def nearest_ambulance(
     """
     row = db.execute(
         text(
-            "SELECT a.id, a.driver_name, a.driver_phone, a.is_available, "
+            "SELECT a.id, a.registration_number, a.vehicle_type, a.is_available, "
             "       ST_Y(a.location::geometry)  AS lat, "
             "       ST_X(a.location::geometry)  AS lng, "
             "       ST_Distance(a.location, ST_MakePoint(:lng, :lat)::geography) AS distance_m "
@@ -157,8 +168,8 @@ def nearest_ambulance(
 
     return AmbulanceNearestOut(
         id=row.id,
-        driver_name=row.driver_name,
-        driver_phone=row.driver_phone,
+        registration_number=row.registration_number,
+        vehicle_type=row.vehicle_type,
         location=LocationSchema(lat=row.lat, lng=row.lng),
         is_available=row.is_available,
         distance_m=row.distance_m,
