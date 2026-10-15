@@ -18,6 +18,21 @@ class Settings(BaseSettings):
         "postgresql+psycopg2://postgres:postgres@db:5432/ambulance_db"
     )
 
+    # ── Driver authentication ─────────────────────────────────────────────────
+    # Google Web OAuth 2.0 client ID — used to verify ID tokens on the server.
+    # Must match the serverClientId passed to google_sign_in in the Flutter app.
+    GOOGLE_CLIENT_ID: str = ""
+
+    # Secret key for signing / verifying our own JWT access tokens.
+    JWT_SECRET: str = "change-me-jwt-secret"
+
+    # Token lifetime in minutes. Default = 7 days.
+    JWT_EXPIRE_MINUTES: int = 10080
+
+    # When true, the POST /auth/dev-login endpoint is enabled so developers
+    # can test without a real Google token. MUST be false in production.
+    ALLOW_DEV_LOGIN: bool = False
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

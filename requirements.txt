@@ -18,3 +18,10 @@ faster-whisper==1.1.1
 # ── LLM Extraction & Triage ──────────────────────────────────────────────────
 # Google Gemini API official SDK for extracting structured triage data
 google-genai==1.29.0
+
+# ── Driver Authentication ─────────────────────────────────────────────────────
+# Google ID token verification (server-side, checks signature + audience)
+google-auth[requests]==2.40.3
+# JWT issuance for our own access tokens
+PyJWT==2.10.1
+
