@@ -56,7 +56,11 @@ class ServerException implements Exception {
 class AuthService {
   AuthService._();
 
-  static const _storage = FlutterSecureStorage();
+  static const _storage = FlutterSecureStorage(
+    aOptions: AndroidOptions(
+      resetOnError: true,
+    ),
+  );
 
   static GoogleSignIn _buildGoogleSignIn() {
     final clientId = DriverApiConfig.googleServerClientId.isNotEmpty
@@ -64,8 +68,8 @@ class AuthService {
         : null;
     return GoogleSignIn(
       clientId: kIsWeb ? clientId : null,
-      serverClientId: clientId,
-      scopes: ['email', 'profile'],
+      serverClientId: kIsWeb ? null : clientId,
+      scopes: ['email', 'profile', 'openid'],
     );
   }
 
@@ -103,16 +107,16 @@ class AuthService {
       throw NetworkException('Failed to get Google authentication: $e');
     }
 
-    final idToken = auth.idToken;
-    if (idToken == null) {
-      throw NetworkException(
-        'Google did not return an ID token. '
+    final token = auth.idToken ?? auth.accessToken;
+    if (token == null) {
+      throw const NetworkException(
+        'Google did not return an authentication token. '
         'Ensure GOOGLE_SERVER_CLIENT_ID is set correctly.',
       );
     }
 
-    // Exchange ID token for our own JWT
-    final driver = await _postGoogleToken(idToken);
+    // Exchange token for our own JWT
+    final driver = await _postGoogleToken(token);
     return driver;
   }
 

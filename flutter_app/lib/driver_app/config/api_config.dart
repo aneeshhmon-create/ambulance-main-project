@@ -22,7 +22,9 @@ class DriverApiConfig {
     if (envUrl.isNotEmpty) return envUrl;
     if (kIsWeb) return 'http://localhost:8000';
     if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'http://192.168.1.6:8000';
+      // 127.0.0.1 forces IPv4 so ADB reverse forwards immediately over USB.
+      // If running wirelessly on Wi-Fi, change to http://192.168.1.3:8000
+      return 'http://127.0.0.1:8000';
     }
     return 'http://localhost:8000';
   }
@@ -31,6 +33,10 @@ class DriverApiConfig {
   /// This is the same value as GOOGLE_CLIENT_ID on the backend.
   /// Passed to google_sign_in as `serverClientId` so we get an ID token.
   /// Override with --dart-define=GOOGLE_SERVER_CLIENT_ID=xxxx.apps.googleusercontent.com
-  static const String googleServerClientId =
-      String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID');
+  static String get googleServerClientId {
+    const fromEnv = String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID');
+    if (fromEnv.isNotEmpty) return fromEnv;
+    return '42982743514-f5tth797d2dq10lr4j8atjgon9r7rikt.apps.googleusercontent.com';
+  }
 }
+

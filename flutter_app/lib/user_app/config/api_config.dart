@@ -24,7 +24,9 @@ class ApiConfig {
       return 'http://localhost:8000';
     }
     if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'http://192.168.1.6:8000';
+      // 127.0.0.1 forces IPv4 so ADB reverse forwards immediately over USB.
+      // If running wirelessly on Wi-Fi, change to http://192.168.1.3:8000
+      return 'http://127.0.0.1:8000';
     }
     return 'http://localhost:8000';
   }

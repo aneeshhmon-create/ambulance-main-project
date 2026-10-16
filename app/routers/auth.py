@@ -104,6 +104,7 @@ def google_sign_in(body: GoogleTokenRequest, db: Session = Depends(get_db)):
     # Verify the ID token with Google's public keys.
     # This import is deferred so the app can start without google-auth
     # installed in environments that only use dev-login.
+    id_info = None
     try:
         from google.oauth2 import id_token as google_id_token
         from google.auth.transport import requests as google_requests
@@ -114,14 +115,41 @@ def google_sign_in(body: GoogleTokenRequest, db: Session = Depends(get_db)):
             settings.GOOGLE_CLIENT_ID,
         )
     except ValueError as exc:
-        # verify_oauth2_token raises ValueError for any validation failure
-        logger.warning("Google token verification failed: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired Google ID token.",
-        )
+        # verify_oauth2_token raises ValueError for any validation failure,
+        # including when an OAuth2 access token is passed from Flutter Web.
+        # Fall back to validating the access token with Google's endpoints.
+        try:
+            import requests as py_requests
 
-    if not id_info.get("email_verified"):
+            token_resp = py_requests.get(
+                f"https://oauth2.googleapis.com/tokeninfo?access_token={body.id_token}",
+                timeout=5,
+            )
+            if token_resp.status_code == 200:
+                token_data = token_resp.json()
+                token_aud = token_data.get("aud") or token_data.get("azp")
+                if token_aud == settings.GOOGLE_CLIENT_ID:
+                    user_resp = py_requests.get(
+                        "https://www.googleapis.com/oauth2/v3/userinfo",
+                        headers={"Authorization": f"Bearer {body.id_token}"},
+                        timeout=5,
+                    )
+                    if user_resp.status_code == 200:
+                        id_info = user_resp.json()
+        except Exception as fallback_exc:
+            logger.warning("Google access token fallback check failed: %s", fallback_exc)
+
+        if not id_info:
+            logger.warning("Google token verification failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired Google ID token.",
+            )
+
+    email_verified = id_info.get("email_verified")
+    if isinstance(email_verified, str):
+        email_verified = email_verified.lower() == "true"
+    if not email_verified:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Google account email is not verified.",

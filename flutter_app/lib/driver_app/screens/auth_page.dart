@@ -40,9 +40,18 @@ class _AuthPageState extends State<AuthPage> {
     });
 
     try {
-      final token = await AuthService.getStoredToken();
-      final driver = await AuthService.getStoredDriver();
-      final savedAmbulance = await AuthService.getSelectedAmbulance();
+      final token = await AuthService.getStoredToken().timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => null,
+      );
+      final driver = await AuthService.getStoredDriver().timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => null,
+      );
+      final savedAmbulance = await AuthService.getSelectedAmbulance().timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => null,
+      );
 
       if (token != null && driver != null) {
         if (savedAmbulance != null && mounted) {
@@ -60,7 +69,12 @@ class _AuthPageState extends State<AuthPage> {
 
         // Token exists but no ambulance saved -> load ambulances for Stage B
         _driver = driver;
-        await _loadAmbulances();
+        await _loadAmbulances().timeout(
+          const Duration(seconds: 5),
+          onTimeout: () {
+            if (mounted) setState(() => _stage = AuthStage.stageA);
+          },
+        );
         return;
       }
 
@@ -490,7 +504,7 @@ class _AuthPageState extends State<AuthPage> {
                     const SizedBox(height: 12),
                     _buildDevDriverTile(
                       name: 'Ramesh Kumar',
-                      email: 'driver1@example.com',
+                      email: 'ambulancemainproject@gmail.com',
                       details: '2 Ambulances (KL-07-AE-1234, KL-07-AE-5678)',
                       theme: theme,
                     ),

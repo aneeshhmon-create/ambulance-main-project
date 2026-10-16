@@ -68,10 +68,16 @@ def _select_device_and_compute() -> tuple[str, str]:
 
 _device, _compute_type = _select_device_and_compute()
 
-# ── Module-level model load ───────────────────────────────────────────────────
-logger.info("Loading faster-whisper model '%s' ...", _MODEL_SIZE)
-_model = WhisperModel(_MODEL_SIZE, device=_device, compute_type=_compute_type)
-logger.info("faster-whisper model '%s' ready.", _MODEL_SIZE)
+# ── Lazy model load ──────────────────────────────────────────────────────────
+_model: WhisperModel | None = None
+
+def _get_model() -> WhisperModel:
+    global _model
+    if _model is None:
+        logger.info("Loading faster-whisper model '%s' ...", _MODEL_SIZE)
+        _model = WhisperModel(_MODEL_SIZE, device=_device, compute_type=_compute_type)
+        logger.info("faster-whisper model '%s' ready.", _MODEL_SIZE)
+    return _model
 
 
 # ── Domain constraints ────────────────────────────────────────────────────────
@@ -83,7 +89,8 @@ _ALLOWED_LANGUAGES = frozenset({"ml", "en"})
 # ── Shared transcribe call ────────────────────────────────────────────────────
 def _run_transcribe(file_path: str, language: str | None):
     """Single transcribe call with consistent settings."""
-    segments, info = _model.transcribe(
+    model = _get_model()
+    segments, info = model.transcribe(
         file_path,
         language=language,
         beam_size=1,                      # greedy: 3-5x faster on CPU
