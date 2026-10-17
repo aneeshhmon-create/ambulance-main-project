@@ -79,6 +79,12 @@ class IncidentOut(BaseModel):
     extracted_data: Optional[dict] = None
 
 
+class AssignedAmbulanceOut(AmbulanceOut):
+    """Ambulance as shown to a hospital: includes the linked driver's contact."""
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+
+
 class HospitalBroadcastOut(BaseModel):
     """
     One broadcast addressed to a hospital, joined with its incident details.
@@ -104,4 +110,4 @@ class HospitalBroadcastOut(BaseModel):
 
     incident_status: str
     assigned_hospital_id: Optional[int] = None
-    assigned_ambulance: Optional[AmbulanceOut] = None
+    assigned_ambulance: Optional[AssignedAmbulanceOut] = None

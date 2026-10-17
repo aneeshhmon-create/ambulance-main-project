@@ -7,8 +7,11 @@ Application entry-point.
 - Registers all routers.
 - Exposes a /health endpoint that verifies both the app and the DB are alive.
 - On startup, ensures the PostGIS extension exists in the database.
+- Logs a loud warning when ALLOW_DEV_LOGIN=true so it can never be enabled
+  by accident in production.
 """
 
+import logging
 import time
 from contextlib import asynccontextmanager
 
@@ -19,6 +22,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import get_db, engine
+
+logger = logging.getLogger(__name__)
 
 
 # ── Lifespan (replaces deprecated @app.on_event) ────────────────────────────
@@ -34,6 +39,19 @@ async def lifespan(app: FastAPI):
         print("[OK] PostGIS extension and users sequence ensured.")
     except Exception as exc:
         print(f"[WARNING] Startup DB setup note: {exc}")
+
+    # ── Dev-login safety warning ──────────────────────────────────────────────
+    if settings.ALLOW_DEV_LOGIN:
+        logger.warning(
+            "\n"
+            "╔══════════════════════════════════════════════════════════════╗\n"
+            "║  ⚠️  WARNING: ALLOW_DEV_LOGIN=true                           ║\n"
+            "║  POST /auth/dev-login is ENABLED — anyone can authenticate  ║\n"
+            "║  as any email without a real Google token.                  ║\n"
+            "║  This MUST be disabled (false) in production.               ║\n"
+            "╚══════════════════════════════════════════════════════════════╝"
+        )
+
     yield
     # Shutdown logic (e.g. close connection pools) would go here
 
@@ -62,12 +80,15 @@ app.add_middleware(
 # ── Routers ──────────────────────────────────────────────────────────────────
 from app.routers import hospitals, ambulances, incidents, users
 from app.routers import test_transcribe  # ← Day-5 only; remove on Day 6
+from app.routers import auth, drivers
 
-app.include_router(hospitals.router, prefix="/hospitals", tags=["Hospitals"])
-app.include_router(ambulances.router, prefix="/ambulances", tags=["Ambulances"])
-app.include_router(incidents.router, prefix="/incidents", tags=["Incidents"])
-app.include_router(users.router, prefix="/users", tags=["Users"])
-app.include_router(test_transcribe.router, prefix="/test", tags=["Test / Validation"])
+app.include_router(hospitals.router,     prefix="/hospitals",  tags=["Hospitals"])
+app.include_router(ambulances.router,    prefix="/ambulances", tags=["Ambulances"])
+app.include_router(incidents.router,     prefix="/incidents",  tags=["Incidents"])
+app.include_router(users.router,         prefix="/users",      tags=["Users"])
+app.include_router(test_transcribe.router, prefix="/test",     tags=["Test / Validation"])
+app.include_router(auth.router,          prefix="/auth",       tags=["Auth"])
+app.include_router(drivers.router,       prefix="/drivers",    tags=["Drivers"])
 
 
 # ── Health-check ─────────────────────────────────────────────────────────────

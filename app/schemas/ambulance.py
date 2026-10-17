@@ -5,6 +5,9 @@ Pydantic v2 schemas for the Ambulance resource.
 
 Location is accepted and returned as {"lat": float, "lng": float}
 plain JSON; conversion to/from PostGIS WKT happens in the router.
+
+driver_name / driver_phone have been removed — driver information now
+lives in the `drivers` table linked via `ambulance_driver`.
 """
 
 from datetime import datetime
@@ -19,8 +22,10 @@ from app.schemas.hospital import LocationSchema   # reuse the same sub-schema
 
 class AmbulanceCreate(BaseModel):
     """Body accepted by POST /ambulances."""
-    driver_name: str = Field(..., min_length=1, max_length=255)
-    driver_phone: str = Field(..., min_length=1, max_length=30)
+    registration_number: str = Field(..., min_length=1, max_length=50)
+    vehicle_type: Optional[str] = Field(
+        None, description="e.g. 'ALS' or 'BLS'", max_length=50
+    )
     location: LocationSchema
 
 
@@ -36,8 +41,8 @@ class AmbulanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    driver_name: str
-    driver_phone: str
+    registration_number: str
+    vehicle_type: Optional[str]
     location: Optional[LocationSchema]
     is_available: bool
 
@@ -45,6 +50,21 @@ class AmbulanceOut(BaseModel):
 class AmbulanceNearestOut(AmbulanceOut):
     """Response for the /ambulances/nearest endpoint — includes distance."""
     distance_m: float = Field(..., description="Distance from query point in metres")
+
+
+# ── Driver-facing ambulance summary ─────────────────────────────────────────
+
+class DriverAmbulanceOut(BaseModel):
+    """
+    Minimal ambulance info returned to an authenticated driver.
+    Used by GET /drivers/me/ambulances.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    registration_number: str
+    vehicle_type: Optional[str]
+    is_available: bool
 
 
 # ── Assignment (what the driver's app polls) ─────────────────────────────────

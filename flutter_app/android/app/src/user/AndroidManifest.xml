@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Internet access for FastAPI backend calls -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Microphone for audio recording (record package) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- GPS / fine location for incident coordinate tagging (geolocator) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- Coarse location fallback (network-based) -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+</manifest>

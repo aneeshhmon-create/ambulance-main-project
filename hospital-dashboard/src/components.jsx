@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { formatDistance, label, timeSince } from "./format.js";
+import { LocationPicker } from "./LocationPicker.jsx";
+import { DepartmentPicker } from "./DepartmentPicker.jsx";
 
 export function SeverityBadge({ severity }) {
   const s = (severity || "unknown").toLowerCase();
@@ -66,7 +68,10 @@ export function AcceptedCase({ item, now }) {
           <dt>Ambulance</dt>
           <dd>
             {amb ? (
-              <>{amb.driver_name} · <a href={`tel:${amb.driver_phone}`}>{amb.driver_phone}</a></>
+              <>
+                {amb.driver_name || amb.registration_number}
+                {amb.driver_phone && <> · <a href={`tel:${amb.driver_phone}`}>{amb.driver_phone}</a></>}
+              </>
             ) : (
               "Not assigned yet"
             )}
@@ -86,10 +91,59 @@ export function Banner({ kind = "error", children, onClose }) {
   );
 }
 
-export function HospitalProfile({ hospital, busy, error, onToggle }) {
+export function HospitalProfile({ hospital, busy, error, onToggle, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(hospital.name);
+  const [point, setPoint] = useState(hospital.location);
+  const [departments, setDepartments] = useState(hospital.departments);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+
+  function startEdit() {
+    setName(hospital.name);
+    setPoint(hospital.location);
+    setDepartments(hospital.departments);
+    setSaveError(null);
+    setEditing(true);
+  }
+
+  async function save(e) {
+    e.preventDefault();
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave({ name: name.trim(), location: point, departments });
+      setEditing(false);
+    } catch (err) {
+      setSaveError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <form className="panel profile register" onSubmit={save}>
+        <h2>Edit hospital profile</h2>
+        <label>Name<input required value={name} onChange={(e) => setName(e.target.value)} /></label>
+        <LocationPicker value={point} onChange={setPoint} />
+        <small className="muted">Location: {point.lat.toFixed(5)}, {point.lng.toFixed(5)}</small>
+        <DepartmentPicker value={departments} onChange={setDepartments} />
+        {saveError && <Banner>{saveError}</Banner>}
+        <div className="row">
+          <button className="accept" disabled={saving || !name.trim()}>{saving ? "Saving…" : "Save changes"}</button>
+          <button type="button" className="tabs-btn" disabled={saving} onClick={() => setEditing(false)}>Cancel</button>
+        </div>
+      </form>
+    );
+  }
+
   return (
     <section className="panel profile">
-      <h2>Hospital profile</h2>
+      <header className="card-head">
+        <h2>Hospital profile</h2>
+        <button className="tabs-btn" onClick={startEdit}>Edit profile</button>
+      </header>
       <p className="profile-name">{hospital.name}</p>
       <dl className="facts">
         <div>
@@ -126,11 +180,11 @@ export function HospitalProfile({ hospital, busy, error, onToggle }) {
   );
 }
 
-export function RegisterHospital({ first, onCreate, onCancel }) {
+export function RegisterHospital({ googleProfile, onCreate, onCancel }) {
   const [name, setName] = useState("");
   const [lat, setLat] = useState("");
   const [lng, setLng] = useState("");
-  const [departments, setDepartments] = useState("");
+  const [departments, setDepartments] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -142,7 +196,7 @@ export function RegisterHospital({ first, onCreate, onCancel }) {
       await onCreate({
         name: name.trim(),
         location: { lat: Number(lat), lng: Number(lng) },
-        departments: departments.split(",").map((d) => d.trim()).filter(Boolean),
+        departments,
       });
     } catch (err) {
       setError(err.message);
@@ -152,20 +206,26 @@ export function RegisterHospital({ first, onCreate, onCancel }) {
 
   return (
     <form className="panel profile register" onSubmit={submit}>
-      <h2>{first ? "No hospitals yet — register one" : "Register a hospital"}</h2>
+      <h2>Register your hospital</h2>
+      {googleProfile && (
+        <p className="muted">
+          Signed in as {googleProfile.name} ({googleProfile.email}). Tell us about the hospital you manage to finish setting up your account.
+        </p>
+      )}
       <label>Name<input required value={name} onChange={(e) => setName(e.target.value)} /></label>
+      <LocationPicker
+        value={lat !== "" && lng !== "" && !Number.isNaN(Number(lat)) && !Number.isNaN(Number(lng)) ? { lat: Number(lat), lng: Number(lng) } : null}
+        onChange={(p) => { setLat(p.lat.toFixed(6)); setLng(p.lng.toFixed(6)); }}
+      />
       <div className="row">
         <label>Latitude<input required type="number" step="any" min="-90" max="90" value={lat} onChange={(e) => setLat(e.target.value)} placeholder="9.9390" /></label>
         <label>Longitude<input required type="number" step="any" min="-180" max="180" value={lng} onChange={(e) => setLng(e.target.value)} placeholder="76.2700" /></label>
       </div>
-      <label>
-        Departments (comma separated — must match the names the AI extracts, e.g. Trauma, Cardiology)
-        <input value={departments} onChange={(e) => setDepartments(e.target.value)} placeholder="Trauma, General Medicine" />
-      </label>
+      <DepartmentPicker value={departments} onChange={setDepartments} />
       {error && <Banner>{error}</Banner>}
       <div className="row">
         <button className="accept" disabled={busy}>{busy ? "Saving…" : "Register hospital"}</button>
-        {onCancel && <button type="button" className="tabs-btn" onClick={onCancel}>Cancel</button>}
+        {onCancel && <button type="button" className="tabs-btn" disabled={busy} onClick={onCancel}>Use a different account</button>}
       </div>
     </form>
   );

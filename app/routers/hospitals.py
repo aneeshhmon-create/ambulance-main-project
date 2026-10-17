@@ -9,7 +9,7 @@ POST   /hospitals                         – register a hospital
 GET    /hospitals                         – list all hospitals
 GET    /hospitals/nearby                  – geo-search (must come before /{id})
 GET    /hospitals/{id}                    – fetch one hospital
-PATCH  /hospitals/{id}                    – update departments / is_active
+PATCH  /hospitals/{id}                    – update name / location / departments / is_active (owner only)
 GET    /hospitals/{id}/broadcasts         – broadcasts for a hospital + incident details
 
 Notes on geography
@@ -25,10 +25,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_hospital_account
 from app.db import get_db
 from app.models.hospital import Hospital
-from app.schemas.ambulance import AmbulanceOut
-from app.schemas.incident import HospitalBroadcastOut
+from app.models.hospital_account import HospitalAccount
+from app.schemas.incident import AssignedAmbulanceOut, HospitalBroadcastOut
 from app.schemas.hospital import (
     HospitalCreate,
     HospitalOut,
@@ -198,15 +199,28 @@ def update_hospital(
     hospital_id: int,
     body: HospitalUpdate,
     db: Session = Depends(get_db),
+    account: HospitalAccount = Depends(get_current_hospital_account),
 ):
     """
-    Partially update a hospital.  Only `departments` and `is_active` may be
-    changed through this endpoint.
+    Partially update a hospital: `name`, `location`, `departments`, `is_active`.
+    Requires the signed-in hospital account that manages this hospital.
     """
+    if account.hospital_id != hospital_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only edit the hospital your account manages.",
+        )
     hospital = db.get(Hospital, hospital_id)
     if not hospital:
         raise HTTPException(status_code=404, detail=f"Hospital {hospital_id} not found")
 
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Name cannot be blank.")
+        hospital.name = name
+    if body.location is not None:
+        hospital.location = _wkt_point(body.location.lat, body.location.lng)
     if body.departments is not None:
         hospital.departments = body.departments
     if body.is_active is not None:
@@ -252,13 +266,21 @@ def list_hospital_broadcasts(
             "       ST_Y(i.location::geometry) AS lat, "
             "       ST_X(i.location::geometry) AS lng, "
             "       ST_Distance(i.location, h.location) / 1000.0 AS distance_km, "
-            "       a.id AS amb_id, a.driver_name, a.driver_phone, a.is_available, "
+            "       a.id AS amb_id, a.registration_number, a.vehicle_type, "
+            "       d.name AS driver_name, d.phone AS driver_phone, "
+            "       a.is_available, "
             "       ST_Y(a.location::geometry) AS amb_lat, "
             "       ST_X(a.location::geometry) AS amb_lng "
             "FROM incident_broadcasts b "
             "JOIN incidents i ON i.id = b.incident_id "
             "JOIN hospitals h ON h.id = b.target_id "
             "LEFT JOIN ambulances a ON a.id = i.assigned_ambulance_id "
+            "LEFT JOIN LATERAL ( "
+            "    SELECT dr.name, dr.phone FROM ambulance_driver ad "
+            "    JOIN drivers dr ON dr.id = ad.driver_id "
+            "    WHERE ad.ambulance_id = a.id AND dr.is_active "
+            "    ORDER BY ad.created_at LIMIT 1 "
+            ") d ON TRUE "
             "WHERE b.target_type = 'hospital' "
             "  AND b.target_id = :hid "
             "  AND b.status = :status "
@@ -289,8 +311,10 @@ def list_hospital_broadcasts(
             incident_status=r.incident_status,
             assigned_hospital_id=r.assigned_hospital_id,
             assigned_ambulance=(
-                AmbulanceOut(
+                AssignedAmbulanceOut(
                     id=r.amb_id,
+                    registration_number=r.registration_number,
+                    vehicle_type=r.vehicle_type,
                     driver_name=r.driver_name,
                     driver_phone=r.driver_phone,
                     location=(

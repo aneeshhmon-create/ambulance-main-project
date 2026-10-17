@@ -34,6 +34,8 @@ class HospitalUpdate(BaseModel):
     """Body accepted by PATCH /hospitals/{id}.
     All fields are optional — only supplied fields are updated.
     """
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    location: Optional[LocationSchema] = None
     departments: Optional[list[str]] = None
     is_active: Optional[bool] = None
 
