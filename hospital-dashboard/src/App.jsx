@@ -1,87 +1,117 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ApiError, POLL_INTERVAL_MS, acceptBroadcast, createHospital, getHospital, listBroadcasts,
-  listHospitals, setHospitalActive,
+  ApiError, POLL_INTERVAL_MS, acceptBroadcast, devSignIn, getHospital, getMe, googleSignIn,
+  listBroadcasts, registerHospital, setHospitalActive, setUnauthorizedHandler, updateHospital,
 } from "./api.js";
+import { clearSession, loadSession, saveSession } from "./session.js";
 import { usePolling } from "./usePolling.js";
 import { AcceptedCase, Banner, HospitalProfile, IncidentCard, RegisterHospital } from "./components.jsx";
+import { Login } from "./Login.jsx";
 
 const NEW_HIGHLIGHT_MS = 10000;
 
-function loadSavedHospital() {
-  try { return Number(localStorage.getItem("hospitalId")) || null; } catch { return null; }
-}
-
 export default function App() {
-  const [hospitals, setHospitals] = useState([]);
-  const [hospitalsError, setHospitalsError] = useState(null);
-  const [loaded, setLoaded] = useState(false);
-  const [registering, setRegistering] = useState(false);
-  const [hospitalId, setHospitalId] = useState(loadSavedHospital);
-  const [tab, setTab] = useState("incidents");
+  const [session, setSession] = useState(loadSession); // { token, account } | null
+  const [checking, setChecking] = useState(() => loadSession() !== null);
+  // Set when a new Google account still has to register its hospital.
+  const [pending, setPending] = useState(null); // { registrationToken, profile }
 
-  useEffect(() => {
-    let cancelled = false;
-    listHospitals()
-      .then((list) => {
-        if (cancelled) return;
-        setHospitals(list);
-        setLoaded(true);
-        setHospitalId((cur) => (list.some((h) => h.id === cur) ? cur : list[0]?.id ?? null));
-      })
-      .catch((e) => !cancelled && setHospitalsError(e.message));
-    return () => { cancelled = true; };
+  const signOut = useCallback(() => {
+    clearSession();
+    setSession(null);
+    setPending(null);
   }, []);
 
+  // Any 401 from the API (expired or revoked token) signs the user out.
   useEffect(() => {
-    try { if (hospitalId) localStorage.setItem("hospitalId", String(hospitalId)); } catch { /* ignore */ }
-  }, [hospitalId]);
+    setUnauthorizedHandler(signOut);
+    return () => setUnauthorizedHandler(() => {});
+  }, [signOut]);
+
+  // Validate a stored session once on startup. A network failure keeps it:
+  // the dashboard shows its own connection errors and retries.
+  useEffect(() => {
+    if (!session) return undefined;
+    let cancelled = false;
+    getMe()
+      .then((res) => {
+        if (cancelled) return;
+        const next = { token: session.token, account: res.account };
+        saveSession(next);
+        setSession(next);
+      })
+      .catch((e) => {
+        if (!cancelled && e instanceof ApiError && e.status && e.status < 500) signOut();
+      })
+      .finally(() => !cancelled && setChecking(false));
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function handleAuthResponse(res) {
+    if (res.registration_required) {
+      setPending({ registrationToken: res.registration_token, profile: res.google_profile });
+      return;
+    }
+    const next = { token: res.access_token, account: res.account };
+    saveSession(next);
+    setSession(next);
+    setPending(null);
+  }
+
+  let body;
+  if (checking) {
+    body = <p className="muted center">Loading…</p>;
+  } else if (session) {
+    body = <Dashboard account={session.account} />;
+  } else if (pending) {
+    body = (
+      <RegisterHospital
+        googleProfile={pending.profile}
+        onCancel={() => setPending(null)}
+        onCreate={async (hospital) => handleAuthResponse(await registerHospital(pending.registrationToken, hospital))}
+      />
+    );
+  } else {
+    body = (
+      <Login
+        onGoogleToken={async (idToken) => handleAuthResponse(await googleSignIn(idToken))}
+        onDevLogin={async (email) => handleAuthResponse(await devSignIn(email))}
+      />
+    );
+  }
 
   return (
     <div className="app">
       <header className="topbar">
         <h1>🚑 Hospital Dashboard</h1>
-        <select
-          value={hospitalId ?? ""}
-          onChange={(e) => setHospitalId(Number(e.target.value))}
-          disabled={!hospitals.length}
-          aria-label="Select hospital"
-        >
-          {hospitals.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
-        </select>
-        {loaded && !registering && (
-          <button className="tabs-btn" onClick={() => setRegistering(true)}>+ Register hospital</button>
+        {session && !checking && (
+          <div className="account">
+            {session.account.photo_url && <img src={session.account.photo_url} alt="" referrerPolicy="no-referrer" />}
+            <span>{session.account.name}</span>
+            <button className="tabs-btn" onClick={signOut}>Sign out</button>
+          </div>
         )}
       </header>
-
-      {hospitalsError && <Banner>Could not load hospitals: {hospitalsError}</Banner>}
-      {!loaded && !hospitalsError && <p className="muted center">Loading hospitals…</p>}
-      {loaded && (registering || hospitals.length === 0) && (
-        <RegisterHospital
-          first={hospitals.length === 0}
-          onCancel={hospitals.length ? () => setRegistering(false) : null}
-          onCreate={async (body) => {
-            const h = await createHospital(body);
-            setHospitals((l) => [...l, h]);
-            setHospitalId(h.id);
-            setRegistering(false);
-          }}
-        />
-      )}
-
-      {hospitalId && !registering && (
-        <>
-          <nav className="tabs">
-            <button className={tab === "incidents" ? "on" : ""} onClick={() => setTab("incidents")}>Emergencies</button>
-            <button className={tab === "profile" ? "on" : ""} onClick={() => setTab("profile")}>Hospital profile</button>
-          </nav>
-          {tab === "incidents"
-            ? <Incidents key={hospitalId} hospitalId={hospitalId} />
-            : <Profile key={hospitalId} hospitalId={hospitalId} onChanged={(h) =>
-                setHospitals((l) => l.map((x) => (x.id === h.id ? h : x)))} />}
-        </>
-      )}
+      {body}
     </div>
+  );
+}
+
+function Dashboard({ account }) {
+  const hospitalId = account.hospital_id;
+  const [tab, setTab] = useState("incidents");
+
+  return (
+    <>
+      <nav className="tabs">
+        <button className={tab === "incidents" ? "on" : ""} onClick={() => setTab("incidents")}>Emergencies</button>
+        <button className={tab === "profile" ? "on" : ""} onClick={() => setTab("profile")}>Hospital profile</button>
+      </nav>
+      {tab === "incidents"
+        ? <Incidents key={hospitalId} hospitalId={hospitalId} />
+        : <Profile key={hospitalId} hospitalId={hospitalId} />}
+    </>
   );
 }
 
@@ -176,7 +206,7 @@ function Incidents({ hospitalId }) {
   );
 }
 
-function Profile({ hospitalId, onChanged }) {
+function Profile({ hospitalId }) {
   const [hospital, setHospital] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -195,7 +225,6 @@ function Profile({ hospitalId, onChanged }) {
     try {
       const updated = await setHospitalActive(hospitalId, next);
       setHospital(updated);
-      onChanged(updated);
     } catch (e) {
       setError(`Could not update status: ${e.message}`);
     } finally {
@@ -206,5 +235,9 @@ function Profile({ hospitalId, onChanged }) {
   if (!hospital) {
     return error ? <Banner>{error}</Banner> : <p className="muted center">Loading profile…</p>;
   }
-  return <HospitalProfile hospital={hospital} busy={busy} error={error} onToggle={toggle} />;
+  async function save(fields) {
+    setHospital(await updateHospital(hospitalId, fields));
+  }
+
+  return <HospitalProfile hospital={hospital} busy={busy} error={error} onToggle={toggle} onSave={save} />;
 }
