@@ -7,12 +7,14 @@ class DriverModel {
   final int id;
   final String name;
   final String email;
+  final String? phone;
   final String? photoUrl;
 
   const DriverModel({
     required this.id,
     required this.name,
     required this.email,
+    this.phone,
     this.photoUrl,
   });
 
@@ -21,6 +23,7 @@ class DriverModel {
       id: json['id'] as int,
       name: json['name'] as String,
       email: json['email'] as String,
+      phone: json['phone'] as String?,
       photoUrl: json['photo_url'] as String?,
     );
   }

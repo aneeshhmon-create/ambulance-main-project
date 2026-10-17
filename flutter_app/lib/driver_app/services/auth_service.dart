@@ -1,7 +1,7 @@
 // lib/driver_app/services/auth_service.dart
 //
-// Handles Google sign-in, backend JWT exchange, secure token storage,
-// and fetching the driver's linked ambulances.
+// Handles Google sign-in, first-time driver registration, backend JWT
+// exchange, secure token storage, and fetching the driver's linked ambulances.
 //
 // All network and storage calls go through this class so the UI stays free
 // of network plumbing.
@@ -21,19 +21,47 @@ const _kJwtKey = 'driver_jwt';
 const _kDriverIdKey = 'driver_id';
 const _kDriverNameKey = 'driver_name';
 const _kDriverEmailKey = 'driver_email';
+const _kDriverPhoneKey = 'driver_phone';
 const _kDriverPhotoKey = 'driver_photo_url';
 const _kAmbulanceIdKey = 'selected_ambulance_id';
 const _kAmbulanceRegKey = 'selected_ambulance_reg';
 
 // ── Exceptions ────────────────────────────────────────────────────────────────
 
-class NotRegisteredDriverException implements Exception {
+/// The server refused the account (e.g. a deactivated driver).
+class AccountDisabledException implements Exception {
   final String message;
-  const NotRegisteredDriverException(
-      [this.message =
-          'This Google account is not registered as a driver.']);
+  const AccountDisabledException(
+      [this.message = 'This driver account has been deactivated.']);
   @override
   String toString() => message;
+}
+
+/// A Google account that has no driver profile yet. The app must collect the
+/// driver's name and phone and call [AuthService.registerDriver].
+class PendingDriverRegistration {
+  final String registrationToken;
+  final String name;
+  final String email;
+  final String? photoUrl;
+
+  const PendingDriverRegistration({
+    required this.registrationToken,
+    required this.name,
+    required this.email,
+    this.photoUrl,
+  });
+}
+
+/// Result of a sign-in attempt: either a signed-in [driver], or a
+/// [registration] that still has to be completed.
+class DriverSignInOutcome {
+  final DriverModel? driver;
+  final PendingDriverRegistration? registration;
+
+  const DriverSignInOutcome.signedIn(this.driver) : registration = null;
+  const DriverSignInOutcome.needsRegistration(this.registration)
+      : driver = null;
 }
 
 class NetworkException implements Exception {
@@ -76,7 +104,8 @@ class AuthService {
   // ── Google sign-in ──────────────────────────────────────────────────────────
 
   /// Triggers the Google sign-in flow and exchanges the ID token for our JWT.
-  static Future<DriverModel?> signInWithGoogle() async {
+  /// Returns null if the person dismissed the Google account picker.
+  static Future<DriverSignInOutcome?> signInWithGoogle() async {
     if (kIsWeb && DriverApiConfig.googleServerClientId.isEmpty) {
       throw const NetworkException(
         'Google Client ID is not set. Launch with --dart-define=GOOGLE_SERVER_CLIENT_ID=... or use Quick Dev Login below.',
@@ -116,92 +145,110 @@ class AuthService {
     }
 
     // Exchange token for our own JWT
-    final driver = await _postGoogleToken(token);
-    return driver;
+    return _postGoogleToken(token);
   }
 
   // ── Backend calls ───────────────────────────────────────────────────────────
 
-  /// POST /auth/google — verify ID token, get our JWT, store it.
-  static Future<DriverModel> _postGoogleToken(String idToken) async {
-    final uri = Uri.parse('${DriverApiConfig.baseUrl}/auth/google');
-    http.Response response;
-    try {
-      response = await http
-          .post(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'id_token': idToken}),
-          )
-          .timeout(const Duration(seconds: 15));
-    } catch (e) {
-      throw NetworkException('Cannot reach server: $e');
-    }
-
-    if (response.statusCode == 403) {
-      throw const NotRegisteredDriverException();
-    }
-    if (response.statusCode == 401) {
-      throw const NetworkException('Google token was rejected by the server.');
-    }
-    if (response.statusCode != 200) {
-      throw ServerException(response.statusCode,
-          _parseErrorDetail(response) ?? 'Unexpected error');
-    }
-
-    final body = jsonDecode(response.body) as Map<String, dynamic>;
-    final jwt = body['access_token'] as String;
-    final driverJson = body['driver'] as Map<String, dynamic>;
-    final driver = DriverModel.fromJson(driverJson);
-
-    // Persist token and profile
-    await _storage.write(key: _kJwtKey, value: jwt);
-    await _saveDriverProfile(driver);
-
-    return driver;
+  /// POST /auth/google — verify ID token, get our JWT (or a registration
+  /// token for a first-time driver).
+  static Future<DriverSignInOutcome> _postGoogleToken(String idToken) async {
+    final response = await _post(
+      '/auth/google',
+      {'id_token': idToken, 'role': 'driver'},
+    );
+    return _handleAuthResponse(response);
   }
 
   /// POST /auth/dev-login — development only, bypasses Google.
-  static Future<DriverModel> devSignIn(String email) async {
-    final uri = Uri.parse('${DriverApiConfig.baseUrl}/auth/dev-login');
-    http.Response response;
-    try {
-      response = await http
-          .post(
-            uri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'email': email}),
-          )
-          .timeout(const Duration(seconds: 15));
-    } catch (e) {
-      throw NetworkException('Cannot reach server: $e');
-    }
-
-    if (response.statusCode == 403) {
-      throw const NotRegisteredDriverException();
-    }
+  static Future<DriverSignInOutcome> devSignIn(String email) async {
+    final response = await _post(
+      '/auth/dev-login',
+      {'email': email, 'role': 'driver'},
+    );
     if (response.statusCode == 404) {
       throw const NetworkException(
         'Dev login is disabled on server (ALLOW_DEV_LOGIN=false).',
       );
     }
-    if (response.statusCode != 200) {
-      throw ServerException(
-        response.statusCode,
-        _parseErrorDetail(response) ?? 'Unexpected error',
-      );
+    return _handleAuthResponse(response);
+  }
+
+  /// POST /auth/register/driver — finish registering a new driver.
+  static Future<DriverModel> registerDriver({
+    required PendingDriverRegistration registration,
+    required String name,
+    required String phone,
+  }) async {
+    final response = await _post('/auth/register/driver', {
+      'registration_token': registration.registrationToken,
+      'name': name,
+      'phone': phone,
+    });
+    if (response.statusCode == 401) {
+      throw NetworkException(_parseErrorDetail(response) ??
+          'Registration expired. Please sign in with Google again.');
+    }
+    if (response.statusCode == 409 || response.statusCode == 422) {
+      throw ServerException(response.statusCode,
+          _parseErrorDetail(response) ?? 'Could not register this driver.');
+    }
+    final outcome = await _handleAuthResponse(response);
+    return outcome.driver!;
+  }
+
+  static Future<http.Response> _post(
+      String path, Map<String, dynamic> body) async {
+    try {
+      return await http
+          .post(
+            Uri.parse('${DriverApiConfig.baseUrl}$path'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 15));
+    } catch (e) {
+      throw NetworkException('Cannot reach server: $e');
+    }
+  }
+
+  /// Interprets a /auth/* response: persists the session when signed in,
+  /// or returns the pending registration for a new driver.
+  static Future<DriverSignInOutcome> _handleAuthResponse(
+      http.Response response) async {
+    if (response.statusCode == 403) {
+      throw AccountDisabledException(
+          _parseErrorDetail(response) ?? 'This account is not allowed to sign in.');
+    }
+    if (response.statusCode == 401) {
+      throw const NetworkException('Google token was rejected by the server.');
+    }
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      throw ServerException(response.statusCode,
+          _parseErrorDetail(response) ?? 'Unexpected error');
     }
 
     final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+    if (body['registration_required'] == true) {
+      final profile = body['google_profile'] as Map<String, dynamic>;
+      return DriverSignInOutcome.needsRegistration(PendingDriverRegistration(
+        registrationToken: body['registration_token'] as String,
+        name: profile['name'] as String,
+        email: profile['email'] as String,
+        photoUrl: profile['photo_url'] as String?,
+      ));
+    }
+
     final jwt = body['access_token'] as String;
-    final driverJson = body['driver'] as Map<String, dynamic>;
-    final driver = DriverModel.fromJson(driverJson);
+    final driver =
+        DriverModel.fromJson(body['account'] as Map<String, dynamic>);
 
     // Persist token and profile
     await _storage.write(key: _kJwtKey, value: jwt);
     await _saveDriverProfile(driver);
 
-    return driver;
+    return DriverSignInOutcome.signedIn(driver);
   }
 
   /// GET /drivers/me/ambulances — returns ambulances linked to the signed-in driver.
@@ -254,6 +301,7 @@ class AuthService {
       id: int.parse(idStr),
       name: name,
       email: email,
+      phone: await _storage.read(key: _kDriverPhoneKey),
       photoUrl: await _storage.read(key: _kDriverPhotoKey),
     );
   }
@@ -286,6 +334,9 @@ class AuthService {
     await _storage.write(key: _kDriverIdKey, value: driver.id.toString());
     await _storage.write(key: _kDriverNameKey, value: driver.name);
     await _storage.write(key: _kDriverEmailKey, value: driver.email);
+    if (driver.phone != null) {
+      await _storage.write(key: _kDriverPhoneKey, value: driver.phone!);
+    }
     if (driver.photoUrl != null) {
       await _storage.write(key: _kDriverPhotoKey, value: driver.photoUrl!);
     }

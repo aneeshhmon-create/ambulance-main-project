@@ -6,6 +6,7 @@ import 'package:ambulance_app/user_app/config/api_config.dart';
 import 'package:ambulance_app/user_app/config/routes.dart';
 import 'package:ambulance_app/user_app/models/user.dart';
 import 'package:ambulance_app/user_app/services/api_service.dart';
+import 'package:ambulance_app/user_app/services/auth_service.dart';
 import 'package:ambulance_app/user_app/services/location_service.dart';
 import 'package:ambulance_app/user_app/services/user_storage.dart';
 
@@ -71,12 +72,14 @@ class HomeScreen extends StatefulWidget {
     this.user,
     this.apiService,
     this.userStorage,
+    this.authService,
     this.locationService,
   });
 
   final User? user;
   final ApiService? apiService;
   final UserStorage? userStorage;
+  final UserAuthService? authService;
   final LocationService? locationService;
 
   @override
@@ -86,6 +89,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   late final ApiService _api;
   late final UserStorage _storage;
+  late final UserAuthService _auth;
   late final LocationService _locationService;
 
   User? _currentUser;
@@ -105,6 +109,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _api = widget.apiService ?? ApiService();
     _storage = widget.userStorage ?? UserStorage();
+    _auth = widget.authService ?? UserAuthService(userStorage: _storage);
     _locationService = widget.locationService ?? const GeolocatorLocationService();
 
     _initUser();
@@ -167,10 +172,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _switchUser() async {
-    await _storage.clearUser();
+  Future<void> _signOut() async {
+    await _auth.signOut();
     if (!mounted) return;
-    Navigator.of(context).pushNamedAndRemoveUntil(AppRoutes.register, (route) => false);
+    Navigator.of(context).pushNamedAndRemoveUntil(AppRoutes.root, (route) => false);
   }
 
   Future<void> _submitPreset(DemoPreset preset) async {
@@ -373,9 +378,9 @@ class _HomeScreenState extends State<HomeScreen> {
               // â”€â”€ Switch user button â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
               Center(
                 child: TextButton.icon(
-                  onPressed: _switchUser,
-                  icon: const Icon(Icons.swap_horiz, size: 18),
-                  label: const Text('Switch user'),
+                  onPressed: _signOut,
+                  icon: const Icon(Icons.logout, size: 18),
+                  label: const Text('Sign out'),
                   style: TextButton.styleFrom(
                     foregroundColor: Colors.grey[700],
                   ),

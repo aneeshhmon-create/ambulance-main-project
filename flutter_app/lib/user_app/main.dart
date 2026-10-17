@@ -13,11 +13,12 @@ import 'package:ambulance_app/user_app/config/routes.dart';
 import 'package:ambulance_app/user_app/models/user.dart';
 import 'package:ambulance_app/user_app/screens/error_screen.dart';
 import 'package:ambulance_app/user_app/screens/home_screen.dart';
+import 'package:ambulance_app/user_app/screens/login_screen.dart';
 import 'package:ambulance_app/user_app/screens/record_screen.dart';
-import 'package:ambulance_app/user_app/screens/register_screen.dart';
 import 'package:ambulance_app/user_app/screens/result_screen.dart';
 import 'package:ambulance_app/user_app/screens/submit_screen.dart';
 import 'package:ambulance_app/user_app/screens/tracking_screen.dart';
+import 'package:ambulance_app/user_app/services/auth_service.dart';
 import 'package:ambulance_app/user_app/services/cleanup_service.dart';
 import 'package:ambulance_app/user_app/services/user_storage.dart';
 
@@ -65,7 +66,6 @@ class AmbulanceUserApp extends StatelessWidget {
       ),
       home: AppRoot(userStorage: userStorage),
       routes: {
-        AppRoutes.register: (context) => const RegisterScreen(),
         AppRoutes.report: (context) => const RecordScreen(),
         AppRoutes.submit: (context) => const SubmitScreen(),
         AppRoutes.result: (context) => const ResultScreen(),
@@ -89,11 +89,13 @@ class AmbulanceUserApp extends StatelessWidget {
   }
 }
 
-/// Checks local user storage and renders either [HomeScreen] or [RegisterScreen].
+/// Checks for a saved, signed-in user and renders either [HomeScreen] or
+/// [LoginScreen] (which leads to registration for first-time users).
 class AppRoot extends StatefulWidget {
-  const AppRoot({super.key, this.userStorage});
+  const AppRoot({super.key, this.userStorage, this.authService});
 
   final UserStorage? userStorage;
+  final UserAuthService? authService;
 
   @override
   State<AppRoot> createState() => _AppRootState();
@@ -101,6 +103,7 @@ class AppRoot extends StatefulWidget {
 
 class _AppRootState extends State<AppRoot> {
   late final UserStorage _storage;
+  late final UserAuthService _auth;
   bool _isChecking = true;
   User? _savedUser;
 
@@ -108,14 +111,18 @@ class _AppRootState extends State<AppRoot> {
   void initState() {
     super.initState();
     _storage = widget.userStorage ?? UserStorage();
+    _auth = widget.authService ?? UserAuthService(userStorage: _storage);
     _checkSavedUser();
   }
 
   Future<void> _checkSavedUser() async {
+    // A saved profile without an access token (e.g. from before Google
+    // sign-in existed) is treated as signed out.
     final user = await _storage.loadUser();
+    final token = user == null ? null : await _auth.getToken();
     if (mounted) {
       setState(() {
-        _savedUser = user;
+        _savedUser = token == null ? null : user;
         _isChecking = false;
       });
     }
@@ -146,6 +153,6 @@ class _AppRootState extends State<AppRoot> {
       return HomeScreen(user: _savedUser);
     }
 
-    return const RegisterScreen();
+    return LoginScreen(authService: _auth);
   }
 }

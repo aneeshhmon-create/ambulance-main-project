@@ -1,19 +1,22 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 
-import 'package:ambulance_app/user_app/services/api_service.dart';
-import 'package:ambulance_app/user_app/services/user_storage.dart';
+import 'package:ambulance_app/user_app/models/user.dart';
+import 'package:ambulance_app/user_app/services/api_service.dart' show ApiException;
+import 'package:ambulance_app/user_app/services/auth_service.dart';
 import 'package:ambulance_app/user_app/utils/validators.dart';
 
-/// Screen for user registration and identification.
+/// Shown after Google sign-in when the account has no user profile yet.
+/// Collects the name and phone number, creates the account, and pops with the
+/// new [User] (or null if the person backs out).
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({
     super.key,
-    this.apiService,
-    this.userStorage,
+    required this.registration,
+    this.authService,
   });
 
-  final ApiService? apiService;
-  final UserStorage? userStorage;
+  final PendingUserRegistration registration;
+  final UserAuthService? authService;
 
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
@@ -21,11 +24,10 @@ class RegisterScreen extends StatefulWidget {
 
 class _RegisterScreenState extends State<RegisterScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
+  late final TextEditingController _nameController;
   final _phoneController = TextEditingController();
 
-  late final ApiService _api;
-  late final UserStorage _storage;
+  late final UserAuthService _auth;
 
   bool _isLoading = false;
   String? _errorMessage;
@@ -33,8 +35,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   void initState() {
     super.initState();
-    _api = widget.apiService ?? ApiService();
-    _storage = widget.userStorage ?? UserStorage();
+    _auth = widget.authService ?? UserAuthService();
+    _nameController = TextEditingController(text: widget.registration.name);
   }
 
   @override
@@ -58,17 +60,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
     });
 
     try {
-      final user = await _api.registerUser(
-        _nameController.text.trim(),
-        _phoneController.text.trim(),
+      final user = await _auth.registerUser(
+        registration: widget.registration,
+        name: _nameController.text.trim(),
+        phone: _phoneController.text.trim(),
       );
 
-      await _storage.saveUser(user);
-
       if (!mounted) return;
-
-      // Replace route so back navigation does not return to RegisterScreen
-      Navigator.of(context).pushReplacementNamed('/');
+      Navigator.of(context).pop<User>(user);
     } on ApiException catch (e) {
       if (mounted) {
         setState(() {
@@ -122,7 +121,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Enter your contact details so emergency responders can identify and reach you quickly.',
+                  'Signed in as ${widget.registration.email}. Enter your contact details so emergency responders can identify and reach you quickly.',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: Colors.grey[700],
                       ),
@@ -217,6 +216,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           ),
                         )
                       : const Text('Continue'),
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: _isLoading
+                      ? null
+                      : () => Navigator.of(context).pop<User>(null),
+                  child: const Text('Use a different Google account'),
                 ),
               ],
             ),

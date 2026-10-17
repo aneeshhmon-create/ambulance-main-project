@@ -21,12 +21,12 @@ void main() {
     expect(find.text('Sign in with Google'), findsOneWidget);
   });
 
-  testWidgets('AmbulanceUserApp renders Registration on first launch',
+  testWidgets('AmbulanceUserApp renders Google sign-in on first launch',
       (WidgetTester tester) async {
     await tester.pumpWidget(const AmbulanceUserApp());
     await tester.pumpAndSettle();
 
     expect(find.text('Emergency Ambulance'), findsOneWidget);
-    expect(find.text('Patient Registration'), findsOneWidget);
+    expect(find.text('Sign in with Google'), findsOneWidget);
   });
 }
