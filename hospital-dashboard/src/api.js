@@ -58,6 +58,8 @@ export const listBroadcasts = (id, status) =>
   request(`/hospitals/${id}/broadcasts?status=${status}`);
 export const acceptBroadcast = (incidentId, broadcastId) =>
   request(`/incidents/${incidentId}/broadcasts/${broadcastId}/accept`, { method: "POST" });
+export const declineBroadcast = (incidentId, broadcastId) =>
+  request(`/incidents/${incidentId}/broadcasts/${broadcastId}/decline`, { method: "POST" });
 
 // ── Authentication ──────────────────────────────────────────────────────────
 // Responses are { registration_required, role, access_token, account,
