@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
             "╔══════════════════════════════════════════════════════════════╗\n"
             "║  ⚠️  WARNING: ALLOW_DEV_LOGIN=true                           ║\n"
             "║  POST /auth/dev-login is ENABLED — anyone can authenticate  ║\n"
-            "║  with any driver email without a real Google token.         ║\n"
+            "║  as any email without a real Google token.                  ║\n"
             "║  This MUST be disabled (false) in production.               ║\n"
             "╚══════════════════════════════════════════════════════════════╝"
         )
@@ -87,7 +87,7 @@ app.include_router(ambulances.router,    prefix="/ambulances", tags=["Ambulances
 app.include_router(incidents.router,     prefix="/incidents",  tags=["Incidents"])
 app.include_router(users.router,         prefix="/users",      tags=["Users"])
 app.include_router(test_transcribe.router, prefix="/test",     tags=["Test / Validation"])
-app.include_router(auth.router,          prefix="/auth",       tags=["Driver Auth"])
+app.include_router(auth.router,          prefix="/auth",       tags=["Auth"])
 app.include_router(drivers.router,       prefix="/drivers",    tags=["Drivers"])
 
 

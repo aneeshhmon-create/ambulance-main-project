@@ -22,6 +22,14 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     phone: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+
+    # Google identity. Nullable because users created before Google sign-in
+    # (via POST /users) only have a phone number.
+    email: Mapped[str | None] = mapped_column(
+        String, unique=True, nullable=True, index=True
+    )
+    photo_url: Mapped[str | None] = mapped_column(String, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

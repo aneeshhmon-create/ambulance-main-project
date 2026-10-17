@@ -168,11 +168,13 @@ class TestGoogleSignIn:
         data = resp.json()
         assert "access_token" in data
         assert data["token_type"] == "bearer"
-        assert data["driver"]["email"] == active_driver.email
-        assert data["driver"]["id"] == active_driver.id
+        assert data["registration_required"] is False
+        assert data["role"] == "driver"
+        assert data["account"]["email"] == active_driver.email
+        assert data["account"]["id"] == active_driver.id
 
-    def test_unknown_email_returns_403(self, client):
-        """Email not in drivers table → 403."""
+    def test_unknown_email_requires_registration(self, client):
+        """Email not in drivers table → 200 asking the app to register."""
         with patch("app.routers.auth.settings") as mock_cfg:
             mock_cfg.GOOGLE_CLIENT_ID = "fake-client-id"
             mock_cfg.ALLOW_DEV_LOGIN = False
@@ -183,8 +185,12 @@ class TestGoogleSignIn:
             ), patch("google.auth.transport.requests.Request"):
                 resp = client.post("/auth/google", json={"id_token": "fake-token"})
 
-        assert resp.status_code == 403
-        assert "not registered" in resp.json()["detail"].lower()
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["registration_required"] is True
+        assert data["access_token"] is None
+        assert data["registration_token"]
+        assert data["google_profile"]["email"] == "notadriver@gmail.com"
 
     def test_inactive_driver_returns_403(self, client, inactive_driver):
         """Inactive driver → 403."""
@@ -295,24 +301,12 @@ class TestDriverAmbulances:
 # ── Tests: dev-login ──────────────────────────────────────────────────────────
 
 class TestDevLogin:
-    def test_dev_login_disabled_by_default(self, client):
-        """dev-login is blocked when ALLOW_DEV_LOGIN=false (default)."""
-        # Even if the endpoint exists, when ALLOW_DEV_LOGIN is false
-        # the route should return 404 (not registered) or 403.
-        # Since ALLOW_DEV_LOGIN defaults to False in test settings,
-        # the endpoint body immediately checks and should still process
-        # but the route IS registered regardless — only schema visibility changes.
-        # This test verifies the behaviour via the settings flag.
+    def test_dev_login_disabled_returns_404(self, client, active_driver):
+        """dev-login is unusable when ALLOW_DEV_LOGIN=false, even for a real driver."""
         with patch("app.routers.auth.settings") as mock_cfg:
             mock_cfg.ALLOW_DEV_LOGIN = False
-            # We send a real request; the endpoint IS registered but the
-            # handler checks the flag implicitly via include_in_schema.
-            # Functional guard: send request and verify it doesn't work
-            # without a valid driver in DB.
-            resp = client.post("/auth/dev-login", json={"email": "nobody@gmail.com"})
-        # Should get 403 (no such driver) — the endpoint itself is accessible
-        # but since there's no driver in DB, it fails correctly.
-        assert resp.status_code == 403
+            resp = client.post("/auth/dev-login", json={"email": active_driver.email})
+        assert resp.status_code == 404
 
     def test_dev_login_works_when_enabled(self, client, active_driver):
         """dev-login returns a token when driver exists and flag is true."""
@@ -326,4 +320,4 @@ class TestDevLogin:
         assert resp.status_code == 200
         data = resp.json()
         assert "access_token" in data
-        assert data["driver"]["email"] == active_driver.email
+        assert data["account"]["email"] == active_driver.email

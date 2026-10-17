@@ -1,6 +1,6 @@
-# Driver Authentication & Ambulance Management API
+# Authentication & Ambulance Management API
 
-This document describes the backend endpoints introduced for driver authentication, session management, and ambulance assignment.
+Google sign-in is shared by the **driver app**, the **user app** and the **hospital dashboard**. Every request names a `role` (`driver` | `user` | `hospital`); accounts are looked up per role by the email in the verified Google token.
 
 ---
 
@@ -8,55 +8,89 @@ This document describes the backend endpoints introduced for driver authenticati
 
 ### 1.1 `POST /auth/google`
 
-Authenticates a driver using a Google OAuth 2.0 ID token (verified on the server using `google-auth`).
+Signs in with a Google OAuth 2.0 ID token (verified on the server using `google-auth`).
 
 * **Access**: Public
 * **Request Body**:
   ```json
-  {
-    "id_token": "<google_id_token_string>"
-  }
+  { "id_token": "<google_id_token_string>", "role": "driver" }
   ```
-* **Success Response (200 OK)**:
+  `role` defaults to `driver`.
+* **Success Response (200 OK) — existing account**:
   ```json
   {
+    "registration_required": false,
+    "role": "driver",
     "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
     "token_type": "bearer",
-    "driver": {
-      "id": 1,
-      "name": "Arun Kumar",
-      "email": "driver1@example.com",
-      "photo_url": "https://lh3.googleusercontent.com/..."
+    "account": {
+      "id": 1, "name": "Arun Kumar", "email": "driver1@example.com",
+      "photo_url": "https://lh3.googleusercontent.com/...",
+      "phone": "9876543210", "hospital_id": null
     }
   }
   ```
+  `phone` is set for drivers and users, `hospital_id` for hospital accounts.
+* **Success Response (200 OK) — first sign-in, no account yet**:
+  ```json
+  {
+    "registration_required": true,
+    "role": "driver",
+    "registration_token": "eyJ...",
+    "google_profile": { "email": "new@gmail.com", "name": "Asha Nair", "photo_url": null }
+  }
+  ```
+  The app shows its registration screen (prefilled from `google_profile`) and then calls `POST /auth/register/{role}`. The registration token expires after 15 minutes and cannot be used to call any other endpoint.
 * **Error Responses**:
   * `401 Unauthorized`: Google ID token is invalid, expired, or has unverified email.
-    ```json
-    { "detail": "Invalid or expired Google token." }
-    ```
-  * `403 Forbidden`: Google account email is not registered in the `drivers` database or `is_active` is `false`.
-    ```json
-    { "detail": "This Google account is not registered as a driver." }
-    ```
+  * `403 Forbidden`: the driver account has been deactivated (`is_active` is `false`).
+  * `503 Service Unavailable`: `GOOGLE_CLIENT_ID` is not configured.
 
 ---
 
-### 1.2 `POST /auth/dev-login` *(Development Only)*
+### 1.2 `POST /auth/register/driver` · `POST /auth/register/user`
 
-Bypasses Google token exchange for local offline development.
-**Disabled by default.** Only active when `ALLOW_DEV_LOGIN=true` is set in `.env`.
+Creates the account for a Google identity that got `registration_required`.
 
-* **Access**: Public (Dev environments only)
+* **Request Body**:
+  ```json
+  { "registration_token": "eyJ...", "name": "Asha Nair", "phone": "+91 98765 43210" }
+  ```
+  The phone is normalised exactly as in `POST /users` (10 digits, `+91`/`0` prefix and spaces/dashes stripped).
+* **Success Response (201 Created)**: same shape as the signed-in response of `/auth/google`.
+* **Error Responses**: `401` bad/expired/wrong-role registration token · `409` account already exists, or the phone belongs to another Google account · `422` blank name or invalid phone.
+
+A user created earlier through `POST /users` (phone only, no email) is adopted when someone registers with the same phone, so their incident history is kept.
+
+### 1.3 `POST /auth/register/hospital`
+
+Creates a hospital and the dashboard account that manages it, in one step.
+
 * **Request Body**:
   ```json
   {
-    "email": "driver1@example.com"
+    "registration_token": "eyJ...",
+    "hospital": { "name": "City Hospital", "location": { "lat": 9.939, "lng": 76.27 }, "departments": ["Trauma", "Cardiology"] }
   }
   ```
-* **Success Response (200 OK)**: Same shape as `POST /auth/google`.
-* **Error Responses**:
-  * `403 Forbidden`: Feature disabled or driver email not found/inactive.
+* **Success Response (201 Created)**: signed-in response with `account.hospital_id` set.
+
+### 1.4 `GET /auth/me`
+
+Returns the account behind the `Authorization: Bearer <JWT>` header (any role) — used to restore a saved session. `401` if the token is missing, invalid, expired or a registration token.
+
+---
+
+### 1.5 `POST /auth/dev-login` *(Development Only)*
+
+Bypasses Google token exchange for local offline development.
+**Disabled by default.** Only active when `ALLOW_DEV_LOGIN=true` is set in `.env`; otherwise it returns `404`.
+
+* **Request Body**:
+  ```json
+  { "email": "driver1@example.com", "role": "driver", "name": "Optional display name" }
+  ```
+* **Success Response (200 OK)**: Same shape as `POST /auth/google` — an unknown email gets `registration_required`, so the registration screens can be tried without a Google account.
 
 ---
 
@@ -89,7 +123,7 @@ Fetches all ambulances linked to the authenticated driver via the `ambulance_dri
   ]
   ```
 * **Error Responses**:
-  * `401 Unauthorized`: Missing, invalid, or expired JWT token.
+  * `401 Unauthorized`: Missing, invalid, or expired JWT token, or a token issued for another role (a user or hospital token cannot call driver endpoints).
 
 ---
 
@@ -97,9 +131,19 @@ Fetches all ambulances linked to the authenticated driver via the `ambulance_dri
 
 ```mermaid
 erDiagram
+    HOSPITALS ||--o{ HOSPITAL_ACCOUNTS : managed_by
     DRIVERS ||--o{ AMBULANCE_DRIVER : links
     AMBULANCES ||--o{ AMBULANCE_DRIVER : links
     AMBULANCES ||--o{ INCIDENTS : assigned_to
+
+    HOSPITAL_ACCOUNTS {
+        int id PK
+        string email UK
+        string name
+        string photo_url
+        int hospital_id FK
+        timestamp created_at
+    }
 
     DRIVERS {
         int id PK

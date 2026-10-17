@@ -1,6 +1,6 @@
 # Google Cloud & OAuth 2.0 Sign-In Setup Guide
 
-This guide walks you through configuring Google Cloud OAuth 2.0 credentials for the **Ambulance Driver Flutter App** and the **FastAPI Backend**.
+This guide walks you through configuring Google Cloud OAuth 2.0 credentials for the **Driver app**, the **User app**, the **Hospital dashboard** and the **FastAPI Backend**. All of them share the one Web client ID from step 3; the mobile apps additionally need an Android client each (step 4), and the dashboard needs its origin authorised (step 3).
 
 ---
 
@@ -47,15 +47,19 @@ This client ID is used by:
 2. Click **+ Create Credentials** > **OAuth client ID**.
 3. Under **Application type**, choose **Web application**.
 4. Set **Name** to: `Ambulance Web & Backend Client`.
-5. Under **Authorized redirect URIs**, add:
+5. Under **Authorized JavaScript origins**, add the hospital dashboard's origin (needed for the Google button there):
+   * `http://localhost:5173`
+6. Under **Authorized redirect URIs**, add:
    * `http://localhost:8000/auth/google`
    * `https://developers.google.com/oauthplayground` (useful for manual token debugging)
-6. Click **Create**.
-7. Copy the generated **Client ID** (e.g., `123456789-abcdef.apps.googleusercontent.com`).
+7. Click **Create**.
+8. Copy the generated **Client ID** (e.g., `123456789-abcdef.apps.googleusercontent.com`).
 
 ---
 
-## 4. Create Android OAuth Client ID (Driver Mobile App)
+## 4. Create Android OAuth Client IDs (Driver and User Mobile Apps)
+
+Do this once per app: the **driver** app uses package `com.team19.ambulance.driver` and the **user** app uses `com.team19.ambulance.user`. Both flavors need their own Android client (with each developer's SHA-1), or Google sign-in fails with `ApiException: 10` on that app.
 
 The `google_sign_in` plugin on Android requires an Android OAuth client ID linked to the package name and your machine's debug SHA-1 signing fingerprint.
 
@@ -91,7 +95,7 @@ keytool -list -v -keystore "%USERPROFILE%\.android\debug.keystore" -alias androi
    *(Defined in `flutter_app/android/app/build.gradle.kts` under `driver` flavor)*.
 5. Paste your **SHA-1 certificate fingerprint**.
 6. Click **Create**.
-7. **Note for teammates**: Repeat this step for each developer's machine by creating an additional Android OAuth Client ID with their machine's respective SHA-1 and the same package name `com.team19.ambulance.driver`.
+7. **Note for teammates**: Repeat this step for each developer's machine by creating an additional Android OAuth Client ID with their machine's respective SHA-1 and the same package name — and again for `com.team19.ambulance.user` for the user app (`Variant: userDebug` in the signing report).
 
 ---
 
@@ -111,8 +115,8 @@ JWT_EXPIRE_MINUTES=1440
 ALLOW_DEV_LOGIN=false
 ```
 
-### 5.2 Seeding Demo Drivers
-In `seed_demo_drivers.py`, replace placeholder emails with your actual test Gmail accounts:
+### 5.2 Seeding Demo Drivers (optional)
+Drivers can now register themselves on first sign-in, so seeding is only needed to pre-link demo drivers to ambulances. In `seed_demo_drivers.py`, replace placeholder emails with your actual test Gmail accounts:
 ```python
 DEMO_DRIVERS = [
     {
@@ -145,3 +149,19 @@ flutter run -d chrome -t lib/driver_app/main.dart \
   --dart-define=API_BASE_URL=http://localhost:8000 \
   --dart-define=GOOGLE_SERVER_CLIENT_ID=1234567890-abcdefg123456.apps.googleusercontent.com
 ```
+
+**User app** — same flags, with `--flavor user -t lib/user_app/main.dart`:
+```bash
+flutter run --flavor user -t lib/user_app/main.dart \
+  --dart-define=API_BASE_URL=http://10.0.2.2:8000 \
+  --dart-define=GOOGLE_SERVER_CLIENT_ID=1234567890-abcdefg123456.apps.googleusercontent.com
+```
+
+### 5.4 Hospital Dashboard (`hospital-dashboard/.env`)
+```env
+VITE_GOOGLE_CLIENT_ID=1234567890-abcdefg123456.apps.googleusercontent.com   # same Web client ID
+```
+`http://localhost:5173` must be listed under the Web client's *Authorized JavaScript origins* (step 3).
+
+### 5.5 Trying it without Google
+Set `ALLOW_DEV_LOGIN=true` in the backend `.env` (and `VITE_ALLOW_DEV_LOGIN=true` for the dashboard). The driver app has a Quick Dev Login panel, the user app shows a dev-login box in debug builds, and an unknown email goes through the same registration screens as a real Google account. Never enable it in production.

@@ -5,6 +5,8 @@ Pydantic v2 schemas for the User resource.
 """
 
 from datetime import datetime
+from typing import Optional
+
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -21,4 +23,6 @@ class UserOut(BaseModel):
     id: int
     name: str
     phone: str
+    email: Optional[str] = None
+    photo_url: Optional[str] = None
     created_at: datetime

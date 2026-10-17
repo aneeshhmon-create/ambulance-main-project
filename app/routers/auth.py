@@ -1,34 +1,63 @@
 """
 app/routers/auth.py
 ────────────────────
-Driver authentication endpoints.
+Google sign-in for the driver app, the user app and the hospital dashboard.
 
 Endpoints
 ─────────
 POST /auth/google
-    Verifies a Google ID token on the server, looks up the driver by
-    verified email, and returns our own short-lived JWT.
+    Verifies a Google ID token on the server and looks up the account for
+    the requested role (driver | user | hospital) by verified email.
+    • Account exists  → returns our own JWT and the account.
+    • No account yet  → returns `registration_required: true` plus a
+      short-lived `registration_token`; the app then collects the missing
+      details and calls POST /auth/register/{role}.
+
+POST /auth/register/driver | /auth/register/user
+    Creates the account from the registration token + name and phone.
+
+POST /auth/register/hospital
+    Creates the hospital (name, location, departments) and the dashboard
+    account that manages it.
+
+GET /auth/me
+    Returns the account behind the Bearer token (used to restore a session).
 
 POST /auth/dev-login   (only when ALLOW_DEV_LOGIN=true in .env)
-    Skips Google verification for local development when Google OAuth
-    is not yet configured. Logs a loud warning at every call. This
-    endpoint cannot be reached at all when ALLOW_DEV_LOGIN=false.
+    Same lookup as /auth/google but skips Google verification, for local
+    development before Google OAuth is configured. Logs a loud warning at
+    every call and returns 404 when ALLOW_DEV_LOGIN=false.
 """
 
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import create_driver_token
+from app.core.security import (
+    create_access_token,
+    create_registration_token,
+    decode_registration_token,
+    get_current_account,
+)
 from app.db import get_db
 from app.models.driver import Driver
-from app.schemas.driver import (
+from app.models.hospital import Hospital
+from app.models.hospital_account import HospitalAccount
+from app.models.user import User
+from app.routers.hospitals import _wkt_point
+from app.routers.users import normalize_phone
+from app.schemas.auth import (
+    AccountOut,
+    AuthResponse,
     DevLoginRequest,
-    DriverProfileOut,
+    GoogleProfile,
     GoogleTokenRequest,
-    TokenResponse,
+    RegisterHospitalRequest,
+    RegisterPersonRequest,
+    Role,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,61 +65,64 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── Helper ────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _driver_to_token_response(driver: Driver) -> TokenResponse:
-    """Build the standard token response for a successfully authenticated driver."""
-    token = create_driver_token(driver.id)
-    return TokenResponse(
-        access_token=token,
-        token_type="bearer",
-        driver=DriverProfileOut(
-            id=driver.id,
-            name=driver.name,
-            email=driver.email,
-            photo_url=driver.photo_url,
-        ),
+def _account_out(role: Role, account) -> AccountOut:
+    return AccountOut(
+        id=account.id,
+        name=account.name,
+        email=account.email,
+        photo_url=account.photo_url,
+        phone=getattr(account, "phone", None),
+        hospital_id=account.hospital_id if role == "hospital" else None,
     )
 
 
-def _lookup_driver(email: str, db: Session) -> Driver:
-    """
-    Find an active driver by verified email.
-    Raises HTTP 403 with a clear message if not found or inactive.
-    """
-    driver = db.query(Driver).filter_by(email=email).first()
-    if not driver or not driver.is_active:
+def _signed_in(role: Role, account) -> AuthResponse:
+    return AuthResponse(
+        role=role,
+        access_token=create_access_token(account.id, role),
+        account=_account_out(role, account),
+    )
+
+
+def _find_account(role: Role, email: str, db: Session):
+    """Return the existing account for (role, email) or None."""
+    model = {"driver": Driver, "user": User, "hospital": HospitalAccount}[role]
+    account = db.query(model).filter_by(email=email).first()
+    if role == "driver" and account and not account.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "This Google account is not registered as a driver. "
-                "Contact your administrator to be added to the system."
-            ),
+            detail="This driver account has been deactivated.",
         )
-    return driver
+    return account
 
 
-# ── POST /auth/google ─────────────────────────────────────────────────────────
+def _sign_in_or_prompt_registration(
+    role: Role, email: str, name: str, photo_url: str | None, db: Session
+) -> AuthResponse:
+    """Sign in an existing account, or ask the client to register a new one."""
+    account = _find_account(role, email, db)
+    if account is None:
+        return AuthResponse(
+            registration_required=True,
+            role=role,
+            registration_token=create_registration_token(role, email, name, photo_url),
+            google_profile=GoogleProfile(email=email, name=name, photo_url=photo_url),
+        )
 
-@router.post(
-    "/google",
-    response_model=TokenResponse,
-    summary="Sign in with Google ID token",
-)
-def google_sign_in(body: GoogleTokenRequest, db: Session = Depends(get_db)):
+    # Keep the Google profile picture fresh. The name is deliberately left
+    # alone: it was entered by the person during registration.
+    if photo_url and account.photo_url != photo_url:
+        account.photo_url = photo_url
+        db.commit()
+    return _signed_in(role, account)
+
+
+def _verify_google_token(token: str) -> dict:
     """
-    Verify a Google ID token (issued by the mobile app) on the server.
-
-    Flow:
-      1. Verify the token's signature, expiry, and audience against
-         GOOGLE_CLIENT_ID using google.oauth2.id_token — **never trust
-         email sent directly from the client**.
-      2. Require email_verified=true in the token claims.
-      3. Look up the driver by the verified email.
-      4. Return our own JWT if the driver is active.
-
-    Returns HTTP 403 if the email is not registered or inactive.
-    Returns HTTP 401 if the Google token is invalid or expired.
+    Verify a Google ID token (or, for Flutter Web, an OAuth access token)
+    and return its claims. Raises HTTP 401 / 503 on failure.
     """
     if not settings.GOOGLE_CLIENT_ID:
         raise HTTPException(
@@ -101,16 +133,15 @@ def google_sign_in(body: GoogleTokenRequest, db: Session = Depends(get_db)):
             ),
         )
 
-    # Verify the ID token with Google's public keys.
-    # This import is deferred so the app can start without google-auth
-    # installed in environments that only use dev-login.
+    # Deferred import so the app can start without google-auth installed in
+    # environments that only use dev-login.
     id_info = None
     try:
         from google.oauth2 import id_token as google_id_token
         from google.auth.transport import requests as google_requests
 
         id_info = google_id_token.verify_oauth2_token(
-            body.id_token,
+            token,
             google_requests.Request(),
             settings.GOOGLE_CLIENT_ID,
         )
@@ -122,7 +153,8 @@ def google_sign_in(body: GoogleTokenRequest, db: Session = Depends(get_db)):
             import requests as py_requests
 
             token_resp = py_requests.get(
-                f"https://oauth2.googleapis.com/tokeninfo?access_token={body.id_token}",
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"access_token": token},
                 timeout=5,
             )
             if token_resp.status_code == 200:
@@ -131,7 +163,7 @@ def google_sign_in(body: GoogleTokenRequest, db: Session = Depends(get_db)):
                 if token_aud == settings.GOOGLE_CLIENT_ID:
                     user_resp = py_requests.get(
                         "https://www.googleapis.com/oauth2/v3/userinfo",
-                        headers={"Authorization": f"Bearer {body.id_token}"},
+                        headers={"Authorization": f"Bearer {token}"},
                         timeout=5,
                     )
                     if user_resp.status_code == 200:
@@ -154,30 +186,182 @@ def google_sign_in(body: GoogleTokenRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Google account email is not verified.",
         )
+    return id_info
 
-    verified_email: str = id_info["email"]
-    photo_url: str | None = id_info.get("picture")
-    name: str = id_info.get("name", verified_email)
 
-    driver = _lookup_driver(verified_email, db)
+# ── POST /auth/google ─────────────────────────────────────────────────────────
 
-    # Opportunistically update the driver's display name and photo_url
-    # from the Google token so the app always shows fresh data.
-    if driver.photo_url != photo_url or driver.name != name:
-        driver.photo_url = photo_url
-        driver.name = name
+@router.post(
+    "/google",
+    response_model=AuthResponse,
+    summary="Sign in with Google ID token",
+)
+def google_sign_in(body: GoogleTokenRequest, db: Session = Depends(get_db)):
+    """
+    Verify a Google ID token on the server and sign in (or start registration).
+
+    Flow:
+      1. Verify the token's signature, expiry and audience against
+         GOOGLE_CLIENT_ID — **never trust an email sent by the client**.
+      2. Require email_verified=true.
+      3. Look up the account for `role` by the verified email.
+      4. Existing account → our JWT. No account → `registration_required`
+         with a registration token for POST /auth/register/{role}.
+
+    Returns HTTP 401 if the Google token is invalid or expired and HTTP 403
+    if a driver account has been deactivated.
+    """
+    id_info = _verify_google_token(body.id_token)
+    email: str = id_info["email"]
+    return _sign_in_or_prompt_registration(
+        body.role,
+        email,
+        id_info.get("name") or email,
+        id_info.get("picture"),
+        db,
+    )
+
+
+# ── POST /auth/register/* ─────────────────────────────────────────────────────
+
+def _register_person(
+    model, role: Role, body: RegisterPersonRequest, db: Session
+) -> AuthResponse:
+    claims = decode_registration_token(body.registration_token, role)
+    email: str = claims["email"]
+
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Name cannot be blank.")
+    phone = normalize_phone(body.phone)
+
+    if db.query(model).filter_by(email=email).first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This Google account is already registered. Please sign in.",
+        )
+
+    account = None
+    if model is User:
+        existing = db.query(User).filter_by(phone=phone).first()
+        if existing and existing.email is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This phone number is already registered to another account.",
+            )
+        if existing:
+            # Created before Google sign-in (phone only): adopt it so the
+            # person keeps their incident history.
+            existing.name = name
+            existing.email = email
+            existing.photo_url = claims.get("picture")
+            account = existing
+
+    if account is None:
+        account = model(
+            name=name,
+            email=email,
+            phone=phone,
+            photo_url=claims.get("picture"),
+        )
+        db.add(account)
+    try:
         db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This account or phone number is already registered.",
+        )
+    db.refresh(account)
+    return _signed_in(role, account)
 
-    return _driver_to_token_response(driver)
+
+@router.post(
+    "/register/driver",
+    response_model=AuthResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Complete driver registration after Google sign-in",
+)
+def register_driver(body: RegisterPersonRequest, db: Session = Depends(get_db)):
+    """Create a driver from the registration token plus name and phone."""
+    return _register_person(Driver, "driver", body, db)
+
+
+@router.post(
+    "/register/user",
+    response_model=AuthResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Complete user registration after Google sign-in",
+)
+def register_user(body: RegisterPersonRequest, db: Session = Depends(get_db)):
+    """Create a user from the registration token plus name and phone."""
+    return _register_person(User, "user", body, db)
+
+
+@router.post(
+    "/register/hospital",
+    response_model=AuthResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Complete hospital registration after Google sign-in",
+)
+def register_hospital(body: RegisterHospitalRequest, db: Session = Depends(get_db)):
+    """Create the hospital and the dashboard account that manages it."""
+    claims = decode_registration_token(body.registration_token, "hospital")
+    email: str = claims["email"]
+
+    if db.query(HospitalAccount).filter_by(email=email).first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This Google account is already registered. Please sign in.",
+        )
+
+    h = body.hospital
+    hospital = Hospital(
+        name=h.name.strip(),
+        location=_wkt_point(h.location.lat, h.location.lng),
+        departments=h.departments,
+    )
+    db.add(hospital)
+    db.flush()
+
+    account = HospitalAccount(
+        email=email,
+        name=claims.get("name") or email,
+        photo_url=claims.get("picture"),
+        hospital_id=hospital.id,
+    )
+    db.add(account)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This Google account is already registered. Please sign in.",
+        )
+    db.refresh(account)
+    return _signed_in("hospital", account)
+
+
+# ── GET /auth/me ──────────────────────────────────────────────────────────────
+
+@router.get(
+    "/me",
+    response_model=AuthResponse,
+    summary="Get the account behind the Bearer token",
+)
+def me(current=Depends(get_current_account)):
+    """Validate the token and return the signed-in account (no new token)."""
+    role, account = current
+    return AuthResponse(role=role, account=_account_out(role, account))
 
 
 # ── POST /auth/dev-login ──────────────────────────────────────────────────────
-# This endpoint is registered by app/main.py only when ALLOW_DEV_LOGIN=true.
-# It is defined here for colocation but the router is mounted conditionally.
 
 @router.post(
     "/dev-login",
-    response_model=TokenResponse,
+    response_model=AuthResponse,
     summary="[DEV ONLY] Sign in by email without Google verification",
     include_in_schema=settings.ALLOW_DEV_LOGIN,  # hide from docs when off
 )
@@ -185,13 +369,22 @@ def dev_login(body: DevLoginRequest, db: Session = Depends(get_db)):
     """
     **Development only** — skips Google token verification entirely.
 
-    Only reachable when ALLOW_DEV_LOGIN=true in .env.
-    A loud WARNING is logged on every call.
+    Only usable when ALLOW_DEV_LOGIN=true in .env; otherwise returns 404.
+    A loud WARNING is logged on every call. Behaves like /auth/google: an
+    unknown email gets `registration_required` so the registration screens
+    can be exercised without a Google account.
     """
+    if not settings.ALLOW_DEV_LOGIN:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dev login is disabled.",
+        )
     logger.warning(
-        "⚠️  DEV LOGIN used for email '%s'. "
+        "⚠️  DEV LOGIN used for %s '%s'. "
         "ALLOW_DEV_LOGIN must be false in production!",
+        body.role,
         body.email,
     )
-    driver = _lookup_driver(body.email, db)
-    return _driver_to_token_response(driver)
+    return _sign_in_or_prompt_registration(
+        body.role, body.email, body.name or body.email.split("@")[0], None, db
+    )
