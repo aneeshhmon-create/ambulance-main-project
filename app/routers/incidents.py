@@ -37,7 +37,9 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, s
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_hospital_account
 from app.db import get_db
+from app.models.hospital_account import HospitalAccount
 from app.models.incident import Incident
 from app.models.incident_broadcast import IncidentBroadcast
 from app.models.ambulance import Ambulance
@@ -480,6 +482,65 @@ def accept_broadcast(
         raise HTTPException(status_code=404, detail="Incident disappeared after commit")
 
     return _build_incident_out(incident, db)
+
+
+# ── POST /incidents/{incident_id}/broadcasts/{broadcast_id}/decline ───────────
+
+@router.post(
+    "/{incident_id}/broadcasts/{broadcast_id}/decline",
+    summary="Hospital declines an incident broadcast",
+)
+def decline_broadcast(
+    incident_id: int,
+    broadcast_id: int,
+    db: Session = Depends(get_db),
+    account: HospitalAccount = Depends(get_current_hospital_account),
+):
+    """
+    Called by a hospital to reject a case it received.
+
+    Only the hospital the broadcast was addressed to may decline it. The
+    incident itself stays pending so other hospitals can still accept it.
+    Returns 409 if the broadcast was already answered or expired (for example
+    another hospital accepted the case first).
+    """
+    broadcast = db.get(IncidentBroadcast, broadcast_id)
+    if (
+        not broadcast
+        or broadcast.incident_id != incident_id
+        or broadcast.target_type != "hospital"
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Broadcast {broadcast_id} not found for incident {incident_id}",
+        )
+    if broadcast.target_id != account.hospital_id:
+        raise HTTPException(
+            status_code=403,
+            detail="This broadcast was not sent to your hospital.",
+        )
+
+    # Check-and-set in one statement so a concurrent accept/expiry can't be overwritten.
+    result = db.execute(
+        text(
+            "UPDATE incident_broadcasts "
+            "SET status = 'declined', responded_at = NOW() "
+            "WHERE id = :bid AND status = 'pending'"
+        ),
+        {"bid": broadcast_id},
+    )
+    db.commit()
+    if result.rowcount == 0:
+        db.expire_all()
+        current = db.get(IncidentBroadcast, broadcast_id)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This case can no longer be declined "
+                f"(current status: '{current.status if current else 'unknown'}')."
+            ),
+        )
+    return {"incident_id": incident_id, "broadcast_id": broadcast_id, "status": "declined"}
 
 
 # ── POST /incidents/{incident_id}/complete ────────────────────────────────────

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Banner } from "./components.jsx";
+import { Banner, BrandMark } from "./components.jsx";
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
 const ALLOW_DEV_LOGIN = import.meta.env.VITE_ALLOW_DEV_LOGIN === "true";
@@ -75,6 +75,7 @@ export function Login({ onGoogleToken, onDevLogin }) {
 
   return (
     <main className="login panel">
+      <BrandMark />
       <h2>Sign in</h2>
       <p className="muted">Use your hospital's Google account to manage incoming emergencies.</p>
       {error && <Banner>{error}</Banner>}

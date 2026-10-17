@@ -3,13 +3,33 @@ import { formatDistance, label, timeSince } from "./format.js";
 import { LocationPicker } from "./LocationPicker.jsx";
 import { DepartmentPicker } from "./DepartmentPicker.jsx";
 
+export function BrandMark() {
+  return (
+    <span className="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+    </span>
+  );
+}
+
 export function SeverityBadge({ severity }) {
   const s = (severity || "unknown").toLowerCase();
   return <span className={`badge badge-${s}`}>{s}</span>;
 }
 
-export function IncidentCard({ item, now, isNew, busy, onAccept }) {
+export function IncidentCard({ item, now, isNew, busy, onAccept, onReject }) {
   const [showTranscript, setShowTranscript] = useState(true);
+  const [confirming, setConfirming] = useState(null); // null | "accept" | "reject"
+  const [lastAction, setLastAction] = useState(null);
+
+  function confirm() {
+    const action = confirming;
+    setLastAction(action);
+    setConfirming(null);
+    (action === "accept" ? onAccept : onReject)(item);
+  }
+
   const sev = (item.severity || "unknown").toLowerCase();
   return (
     <article className={`card sev-${sev} ${isNew ? "is-new" : ""}`}>
@@ -43,9 +63,30 @@ export function IncidentCard({ item, now, isNew, busy, onAccept }) {
       )}
 
       <footer>
-        <button className="accept" disabled={busy} onClick={() => onAccept(item)}>
-          {busy ? "Accepting…" : "Accept case"}
-        </button>
+        {confirming ? (
+          <div className={`confirm confirm-${confirming}`} role="alertdialog" aria-label="Confirm your choice">
+            <p>
+              {confirming === "accept"
+                ? <>Accept case <strong>#{item.incident_id}</strong>? Your hospital will be assigned this patient and other hospitals will no longer see it.</>
+                : <>Reject case <strong>#{item.incident_id}</strong>? It will be removed from your list. Other hospitals can still accept it.</>}
+            </p>
+            <div className="row">
+              <button type="button" className={confirming === "accept" ? "accept" : "reject-solid"} onClick={confirm}>
+                {confirming === "accept" ? "Yes, accept case" : "Yes, reject case"}
+              </button>
+              <button type="button" className="tabs-btn" onClick={() => setConfirming(null)}>Go back</button>
+            </div>
+          </div>
+        ) : (
+          <div className="row actions">
+            <button className="accept" disabled={busy} onClick={() => setConfirming("accept")}>
+              {busy && lastAction === "accept" ? "Accepting…" : "Accept case"}
+            </button>
+            <button className="reject" disabled={busy} onClick={() => setConfirming("reject")}>
+              {busy && lastAction === "reject" ? "Rejecting…" : "Reject"}
+            </button>
+          </div>
+        )}
       </footer>
     </article>
   );
@@ -91,7 +132,7 @@ export function Banner({ kind = "error", children, onClose }) {
   );
 }
 
-export function HospitalProfile({ hospital, busy, error, onToggle, onSave }) {
+export function HospitalProfile({ hospital, onSave }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(hospital.name);
   const [point, setPoint] = useState(hospital.location);
@@ -160,22 +201,7 @@ export function HospitalProfile({ hospital, busy, error, onToggle, onSave }) {
           <dt>Location</dt>
           <dd>{hospital.location.lat.toFixed(4)}, {hospital.location.lng.toFixed(4)}</dd>
         </div>
-        <div>
-          <dt>Status</dt>
-          <dd>
-            <label className="switch">
-              <input
-                type="checkbox"
-                checked={hospital.is_active}
-                disabled={busy}
-                onChange={(e) => onToggle(e.target.checked)}
-              />
-              <span>{hospital.is_active ? "Active — receiving emergencies" : "Inactive — not receiving new emergencies"}</span>
-            </label>
-          </dd>
-        </div>
       </dl>
-      {error && <Banner>{error}</Banner>}
     </section>
   );
 }

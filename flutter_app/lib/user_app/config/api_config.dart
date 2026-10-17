@@ -44,4 +44,14 @@ class ApiConfig {
     const val = String.fromEnvironment('DEMO_LNG', defaultValue: '76.2700');
     return double.tryParse(val) ?? 76.2700;
   }
+
+  /// The Web OAuth 2.0 client ID from Google Cloud Console — the same value
+  /// as GOOGLE_CLIENT_ID on the backend. Passed to google_sign_in so we get
+  /// an ID token the backend can verify.
+  /// Override with --dart-define=GOOGLE_SERVER_CLIENT_ID=xxxx.apps.googleusercontent.com
+  static String get googleServerClientId {
+    const fromEnv = String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID');
+    if (fromEnv.isNotEmpty) return fromEnv;
+    return '42982743514-f5tth797d2dq10lr4j8atjgon9r7rikt.apps.googleusercontent.com';
+  }
 }

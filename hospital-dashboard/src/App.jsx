@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ApiError, POLL_INTERVAL_MS, acceptBroadcast, devSignIn, getHospital, getMe, googleSignIn,
+  ApiError, POLL_INTERVAL_MS, acceptBroadcast, declineBroadcast, devSignIn, getHospital, getMe, googleSignIn,
   listBroadcasts, registerHospital, setHospitalActive, setUnauthorizedHandler, updateHospital,
 } from "./api.js";
 import { clearSession, loadSession, saveSession } from "./session.js";
 import { usePolling } from "./usePolling.js";
-import { AcceptedCase, Banner, HospitalProfile, IncidentCard, RegisterHospital } from "./components.jsx";
+import { AcceptedCase, Banner, BrandMark, HospitalProfile, IncidentCard, RegisterHospital } from "./components.jsx";
 import { Login } from "./Login.jsx";
 
 const NEW_HIGHLIGHT_MS = 10000;
@@ -82,35 +82,92 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <>
       <header className="topbar">
-        <h1>🚑 Hospital Dashboard</h1>
-        {session && !checking && (
-          <div className="account">
-            {session.account.photo_url && <img src={session.account.photo_url} alt="" referrerPolicy="no-referrer" />}
-            <span>{session.account.name}</span>
-            <button className="tabs-btn" onClick={signOut}>Sign out</button>
+        <div className="topbar-inner">
+          <div className="brand">
+            <BrandMark />
+            <div>
+              <h1>Hospital Dashboard</h1>
+              <small>Emergency response</small>
+            </div>
           </div>
-        )}
+          {session && !checking && (
+            <div className="account">
+              {session.account.photo_url && <img src={session.account.photo_url} alt="" referrerPolicy="no-referrer" />}
+              <span>{session.account.name}</span>
+              <button className="tabs-btn" onClick={signOut}>Sign out</button>
+            </div>
+          )}
+        </div>
       </header>
-      {body}
-    </div>
+      <div className="app">{body}</div>
+    </>
   );
 }
 
 function Dashboard({ account }) {
   const hospitalId = account.hospital_id;
   const [tab, setTab] = useState("incidents");
+  const [hospital, setHospital] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [statusError, setStatusError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getHospital(hospitalId)
+      .then((h) => !cancelled && setHospital(h))
+      .catch((e) => !cancelled && setLoadError(e.message));
+    return () => { cancelled = true; };
+  }, [hospitalId]);
+
+  async function toggleStatus() {
+    const next = !hospital.is_active;
+    if (!next && !window.confirm("Go inactive? You will stop receiving new emergencies until you switch back.")) return;
+    setStatusBusy(true);
+    setStatusError(null);
+    try {
+      setHospital(await setHospitalActive(hospitalId, next));
+    } catch (e) {
+      setStatusError(`Could not update status: ${e.message}`);
+    } finally {
+      setStatusBusy(false);
+    }
+  }
+
+  async function saveProfile(fields) {
+    setHospital(await updateHospital(hospitalId, fields));
+  }
 
   return (
     <>
       <nav className="tabs">
         <button className={tab === "incidents" ? "on" : ""} onClick={() => setTab("incidents")}>Emergencies</button>
         <button className={tab === "profile" ? "on" : ""} onClick={() => setTab("profile")}>Hospital profile</button>
+        <button
+          className={`status-btn ${hospital?.is_active ? "active" : "inactive"}`}
+          disabled={!hospital || statusBusy}
+          onClick={toggleStatus}
+          title={hospital?.is_active ? "Click to stop receiving new emergencies" : "Click to start receiving emergencies"}
+        >
+          <span className="status-dot" aria-hidden="true" />
+          {!hospital ? "Status…" : statusBusy ? "Updating…" : hospital.is_active ? "Active" : "Inactive"}
+        </button>
       </nav>
-      {tab === "incidents"
-        ? <Incidents key={hospitalId} hospitalId={hospitalId} />
-        : <Profile key={hospitalId} hospitalId={hospitalId} />}
+      {statusError && <Banner onClose={() => setStatusError(null)}>{statusError}</Banner>}
+      {hospital && !hospital.is_active && (
+        <Banner kind="warn">Your hospital is inactive and will not receive new emergencies.</Banner>
+      )}
+      {tab === "incidents" ? (
+        <Incidents key={hospitalId} hospitalId={hospitalId} />
+      ) : hospital ? (
+        <HospitalProfile hospital={hospital} onSave={saveProfile} />
+      ) : loadError ? (
+        <Banner>{loadError}</Banner>
+      ) : (
+        <p className="muted center">Loading profile…</p>
+      )}
     </>
   );
 }
@@ -170,6 +227,25 @@ function Incidents({ hospitalId }) {
     }
   }
 
+  async function handleReject(item) {
+    setBusyId(item.broadcast_id);
+    setNotice(null);
+    try {
+      await declineBroadcast(item.incident_id, item.broadcast_id);
+      removePending(item.broadcast_id);
+      setNotice({ kind: "success", text: `Case #${item.incident_id} rejected and removed from your list.` });
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        removePending(item.broadcast_id);
+        setNotice({ kind: "warn", text: `Case #${item.incident_id} was already handled, so it can't be rejected.` });
+      } else {
+        setNotice({ kind: "error", text: `Could not reject case #${item.incident_id}: ${e.message}` });
+      }
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   const list = pending.data;
   return (
     <main className="columns">
@@ -191,6 +267,7 @@ function Incidents({ hospitalId }) {
             isNew={(newIds[item.broadcast_id] || 0) > now}
             busy={busyId === item.broadcast_id}
             onAccept={handleAccept}
+            onReject={handleReject}
           />
         ))}
       </section>
@@ -204,40 +281,4 @@ function Incidents({ hospitalId }) {
       </section>
     </main>
   );
-}
-
-function Profile({ hospitalId }) {
-  const [hospital, setHospital] = useState(null);
-  const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    getHospital(hospitalId)
-      .then((h) => !cancelled && setHospital(h))
-      .catch((e) => !cancelled && setError(e.message));
-    return () => { cancelled = true; };
-  }, [hospitalId]);
-
-  async function toggle(next) {
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await setHospitalActive(hospitalId, next);
-      setHospital(updated);
-    } catch (e) {
-      setError(`Could not update status: ${e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!hospital) {
-    return error ? <Banner>{error}</Banner> : <p className="muted center">Loading profile…</p>;
-  }
-  async function save(fields) {
-    setHospital(await updateHospital(hospitalId, fields));
-  }
-
-  return <HospitalProfile hospital={hospital} busy={busy} error={error} onToggle={toggle} onSave={save} />;
 }

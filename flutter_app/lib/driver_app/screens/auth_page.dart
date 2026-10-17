@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:ambulance_app/driver_app/models/driver.dart';
 import 'package:ambulance_app/driver_app/services/auth_service.dart';
 import 'package:ambulance_app/driver_app/screens/home_screen.dart';
+import 'package:ambulance_app/driver_app/screens/register_screen.dart';
 
 enum AuthStage {
   loading,
@@ -25,7 +26,7 @@ class _AuthPageState extends State<AuthPage> {
 
   bool _isActionLoading = false;
   String? _errorMessage;
-  bool _isNotRegisteredError = false;
+  bool _isAccountError = false;
 
   @override
   void initState() {
@@ -128,14 +129,14 @@ class _AuthPageState extends State<AuthPage> {
     setState(() {
       _isActionLoading = true;
       _errorMessage = null;
-      _isNotRegisteredError = false;
+      _isAccountError = false;
     });
 
     try {
-      final driver = await AuthService.signInWithGoogle();
+      final outcome = await AuthService.signInWithGoogle();
       if (!mounted) return;
 
-      if (driver == null) {
+      if (outcome == null) {
         // User dismissed the Google picker
         setState(() {
           _isActionLoading = false;
@@ -143,14 +144,13 @@ class _AuthPageState extends State<AuthPage> {
         return;
       }
 
-      _driver = driver;
-      await _loadAmbulances();
-    } on NotRegisteredDriverException catch (e) {
+      await _continueAfterSignIn(outcome);
+    } on AccountDisabledException catch (e) {
       if (!mounted) return;
       setState(() {
         _isActionLoading = false;
         _errorMessage = e.message;
-        _isNotRegisteredError = true;
+        _isAccountError = true;
       });
     } on NetworkException catch (e) {
       if (!mounted) return;
@@ -173,24 +173,48 @@ class _AuthPageState extends State<AuthPage> {
     }
   }
 
+  /// Goes to ambulance selection once signed in; a first-time driver is sent
+  /// through the registration screen (name + phone) first.
+  Future<void> _continueAfterSignIn(DriverSignInOutcome outcome) async {
+    var driver = outcome.driver;
+
+    final registration = outcome.registration;
+    if (registration != null) {
+      setState(() => _isActionLoading = false);
+      driver = await Navigator.of(context).push<DriverModel>(
+        MaterialPageRoute(
+          builder: (_) => DriverRegisterScreen(registration: registration),
+        ),
+      );
+      if (!mounted) return;
+      if (driver == null) {
+        // Registration abandoned — make sure no Google session lingers.
+        await AuthService.clearSession();
+        return;
+      }
+    }
+
+    _driver = driver;
+    await _loadAmbulances();
+  }
+
   Future<void> _handleDevLogin(String email) async {
     setState(() {
       _isActionLoading = true;
       _errorMessage = null;
-      _isNotRegisteredError = false;
+      _isAccountError = false;
     });
 
     try {
-      final driver = await AuthService.devSignIn(email);
+      final outcome = await AuthService.devSignIn(email);
       if (!mounted) return;
-      _driver = driver;
-      await _loadAmbulances();
-    } on NotRegisteredDriverException catch (e) {
+      await _continueAfterSignIn(outcome);
+    } on AccountDisabledException catch (e) {
       if (!mounted) return;
       setState(() {
         _isActionLoading = false;
         _errorMessage = e.message;
-        _isNotRegisteredError = true;
+        _isAccountError = true;
       });
     } on NetworkException catch (e) {
       if (!mounted) return;
@@ -226,7 +250,7 @@ class _AuthPageState extends State<AuthPage> {
       _ambulances = [];
       _selectedAmbulance = null;
       _errorMessage = null;
-      _isNotRegisteredError = false;
+      _isAccountError = false;
       _stage = AuthStage.stageA;
       _isActionLoading = false;
     });
@@ -347,7 +371,7 @@ class _AuthPageState extends State<AuthPage> {
                         ),
                       ],
                     ),
-                    if (_isNotRegisteredError) ...[
+                    if (_isAccountError) ...[
                       const SizedBox(height: 12),
                       OutlinedButton.icon(
                         icon: const Icon(Icons.account_circle, size: 18),
@@ -520,6 +544,14 @@ class _AuthPageState extends State<AuthPage> {
                       name: 'Anand V',
                       email: 'driver3@example.com',
                       details: '1 Ambulance (KL-01-BE-2222)',
+                      theme: theme,
+                    ),
+                    const SizedBox(height: 8),
+                    _buildDevDriverTile(
+                      name: 'New driver',
+                      email:
+                          'new.driver.${DateTime.now().millisecondsSinceEpoch}@example.com',
+                      details: 'Not registered — tests the registration screen',
                       theme: theme,
                     ),
                   ],
