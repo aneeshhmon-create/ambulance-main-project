@@ -1,6 +1,7 @@
 ﻿import 'dart:async';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -334,7 +335,9 @@ class _PlaybackViewState extends State<_PlaybackView> {
     if (_playerState == PlayerState.playing) {
       await _player.pause();
     } else {
-      await _player.play(DeviceFileSource(widget.path));
+      await _player.play(
+        kIsWeb ? UrlSource(widget.path) : DeviceFileSource(widget.path),
+      );
     }
   }
 

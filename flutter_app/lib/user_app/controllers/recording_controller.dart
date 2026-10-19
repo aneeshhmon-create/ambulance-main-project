@@ -112,7 +112,12 @@ class RecordingController extends ChangeNotifier {
     if (_state == RecordingState.recording) return;
 
     // â”€â”€ Permission check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    PermissionStatus status = await _checkAndRequestPermission();
+    // On web the browser prompts through the recorder itself.
+    PermissionStatus status = kIsWeb
+        ? ((await _recorder.hasPermission())
+            ? PermissionStatus.granted
+            : PermissionStatus.denied)
+        : await _checkAndRequestPermission();
 
     if (status.isPermanentlyDenied || status.isRestricted) {
       _setState(RecordingState.permissionPermanentlyDenied);
@@ -126,9 +131,10 @@ class RecordingController extends ChangeNotifier {
 
     // â”€â”€ Start recorder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try {
-      final dir = await _getTempDir();
-      final path =
-          '${dir.path}/report_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final path = kIsWeb
+          ? 'report_$stamp.wav' // no file system on web
+          : '${(await _getTempDir()).path}/report_$stamp.m4a';
 
       await _recorder.start(path);
 
@@ -151,7 +157,9 @@ class RecordingController extends ChangeNotifier {
     _stopTicker();
 
     try {
-      await _recorder.stop();
+      final stopped = await _recorder.stop();
+      // On web the recording lives at a blob: URL returned by stop().
+      if (kIsWeb && stopped.isNotEmpty) _recordedPath = stopped;
     } catch (e) {
       _errorMessage = e.toString();
       _recordedPath = null;

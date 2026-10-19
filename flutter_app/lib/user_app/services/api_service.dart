@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
 import 'package:ambulance_app/user_app/config/api_config.dart';
@@ -161,13 +162,26 @@ class ApiService {
     required double lat,
     required double lng,
   }) async {
-    final file = File(audioPath);
-    try {
-      if (!await file.exists() || await file.length() == 0) {
+    // On web the recording is a blob: URL, not a file: read its bytes instead.
+    List<int>? webBytes;
+    if (kIsWeb) {
+      try {
+        webBytes = (await _client.get(Uri.parse(audioPath))).bodyBytes;
+      } catch (_) {
+        webBytes = null;
+      }
+      if (webBytes == null || webBytes.isEmpty) {
         throw const ApiException('Audio recording is missing or empty.');
       }
-    } on FileSystemException {
-      throw const ApiException('Audio recording is missing or empty.');
+    } else {
+      final file = File(audioPath);
+      try {
+        if (!await file.exists() || await file.length() == 0) {
+          throw const ApiException('Audio recording is missing or empty.');
+        }
+      } on FileSystemException {
+        throw const ApiException('Audio recording is missing or empty.');
+      }
     }
 
     final uri = Uri.parse('${ApiConfig.baseUrl}/incidents');
@@ -179,10 +193,13 @@ class ApiService {
       request.fields['user_id'] = userId.toString();
     }
 
-    final multipartFile = await http.MultipartFile.fromPath(
-      'audio_file',
-      audioPath,
-    );
+    final multipartFile = webBytes != null
+        ? http.MultipartFile.fromBytes(
+            'audio_file',
+            webBytes,
+            filename: 'report.wav',
+          )
+        : await http.MultipartFile.fromPath('audio_file', audioPath);
     request.files.add(multipartFile);
 
     try {
