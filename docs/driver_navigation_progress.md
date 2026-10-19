@@ -72,3 +72,4 @@ Last updated: 2026-10-19 (session 1 starting)
 | Item | Status | Notes |
 |------|--------|-------|
 | Logout-and-return loses active navigation | Done | `_resumeNavigationIfNeeded()` in `home_screen.dart` calls `GET /ambulances/{id}/assignment` on init and on app-resume; navigates to `NavigationScreen` automatically if `assigned=true`. Guard flag `_checkingAssignment` prevents duplicate pushes. Committed `90f673f`. |
+| Cancel returns to Home but does not release incident to other drivers | Done | New `POST /ambulances/{id}/incidents/{id}/cancel` backend endpoint: clears assignment, resets incident to `pending`, re-inserts `inci_ambu` rows for all other online+available ambulances. Flutter: `_handleCancel` now shows a confirmation dialog, calls `cancelIncident()`, then pops. Committed `aa3dba5`. |
