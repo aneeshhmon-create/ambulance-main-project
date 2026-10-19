@@ -270,10 +270,7 @@ class _AuthPageState extends State<AuthPage> {
       MaterialPageRoute(
         builder: (_) => DriverHomeScreen(
           driver: _driver!,
-          ambulance: (
-            id: _selectedAmbulance!.id,
-            registrationNumber: _selectedAmbulance!.registrationNumber,
-          ),
+          ambulance: _selectedAmbulance!,
         ),
       ),
     );

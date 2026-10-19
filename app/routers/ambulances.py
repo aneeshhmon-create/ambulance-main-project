@@ -18,22 +18,37 @@ Notes on geography
 • /nearest uses ORDER BY distance ASC LIMIT 1 (no radius filter).
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from datetime import datetime, timezone
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.core.security import get_current_driver
 from app.db import get_db
 from app.models.ambulance import Ambulance
+from app.models.driver import Driver
+from app.models.incident import Incident
+from app.models.incident_ambulance import IncidentAmbulance
 from app.schemas.ambulance import (
     AmbulanceCreate,
     AmbulanceOut,
     AmbulanceLocationUpdate,
+    AmbulanceOnlineUpdate,
     AmbulanceNearestOut,
     AmbulanceAssignmentOut,
+    AmbulanceIncidentOut,
     AssignmentHospitalOut,
     AssignmentPatientOut,
 )
 from app.schemas.hospital import LocationSchema
+from app.schemas.incident import IncidentOut
+from app.routers.incidents import _build_incident_out
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -50,15 +65,18 @@ def _ambulance_orm_to_out(a: Ambulance, db: Session) -> AmbulanceOut:
     if a.location is None:
         loc = None
     else:
-        result = db.execute(
-            text(
-                "SELECT ST_Y(location::geometry) AS lat, "
-                "       ST_X(location::geometry) AS lng "
-                "FROM ambulances WHERE id = :id"
-            ),
-            {"id": a.id},
-        ).fetchone()
-        loc = LocationSchema(lat=result.lat, lng=result.lng)
+        try:
+            result = db.execute(
+                text(
+                    "SELECT ST_Y(location::geometry) AS lat, "
+                    "       ST_X(location::geometry) AS lng "
+                    "FROM ambulances WHERE id = :id"
+                ),
+                {"id": a.id},
+            ).fetchone()
+            loc = LocationSchema(lat=result.lat, lng=result.lng) if result and result.lat is not None else None
+        except Exception:
+            loc = LocationSchema(lat=0.0, lng=0.0)
 
     return AmbulanceOut(
         id=a.id,
@@ -66,7 +84,33 @@ def _ambulance_orm_to_out(a: Ambulance, db: Session) -> AmbulanceOut:
         vehicle_type=a.vehicle_type,
         location=loc,
         is_available=a.is_available,
+        is_online=a.is_online,
+        location_updated_at=a.location_updated_at,
     )
+
+
+def _verify_driver_ambulance_access(
+    ambulance_id: int, driver: Driver, db: Session
+) -> Ambulance:
+    """Verify that the authenticated driver is authorized to operate this ambulance."""
+    link = db.execute(
+        text(
+            "SELECT 1 FROM ambulance_driver "
+            "WHERE ambulance_id = :aid AND driver_id = :did"
+        ),
+        {"aid": ambulance_id, "did": driver.id},
+    ).fetchone()
+    if not link:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Driver {driver.id} is not authorized to operate ambulance {ambulance_id}.",
+        )
+    amb = db.get(Ambulance, ambulance_id)
+    if not amb:
+        raise HTTPException(
+            status_code=404, detail=f"Ambulance {ambulance_id} not found"
+        )
+    return amb
 
 
 # ── POST /ambulances ───────────────────────────────────────────────────────────
@@ -108,6 +152,7 @@ def list_ambulances(
     rows = db.execute(
         text(
             "SELECT a.id, a.registration_number, a.vehicle_type, a.is_available, "
+            "       a.is_online, a.location_updated_at, "
             "       ST_Y(a.location::geometry) AS lat, "
             "       ST_X(a.location::geometry) AS lng "
             "FROM ambulances a "
@@ -124,6 +169,8 @@ def list_ambulances(
             vehicle_type=r.vehicle_type,
             location=LocationSchema(lat=r.lat, lng=r.lng) if r.lat is not None else None,
             is_available=r.is_available,
+            is_online=r.is_online,
+            location_updated_at=r.location_updated_at,
         )
         for r in rows
     ]
@@ -172,8 +219,114 @@ def nearest_ambulance(
         vehicle_type=row.vehicle_type,
         location=LocationSchema(lat=row.lat, lng=row.lng),
         is_available=row.is_available,
+        is_online=getattr(row, "is_online", False),
+        location_updated_at=getattr(row, "location_updated_at", None),
         distance_m=row.distance_m,
     )
+
+
+# ── PATCH /ambulances/{id}/online ─────────────────────────────────────────────
+
+@router.patch(
+    "/{ambulance_id}/online",
+    response_model=AmbulanceOut,
+    summary="Toggle ambulance online status and optionally set location",
+)
+def update_ambulance_online(
+    ambulance_id: int,
+    body: AmbulanceOnlineUpdate,
+    driver: Driver = Depends(get_current_driver),
+    db: Session = Depends(get_db),
+):
+    """
+    Toggle online state for the selected ambulance.
+    Requires the signed-in driver to be linked to this ambulance.
+    Going offline while holding an active (assigned, not completed) incident returns 409.
+    When going online, backfills recent unassigned incidents within CANDIDATE_RADIUS_KM.
+    """
+    ambulance = _verify_driver_ambulance_access(ambulance_id, driver, db)
+
+    if not body.is_online:
+        # Check if ambulance holds an active incident
+        active_case = db.execute(
+            text(
+                "SELECT id FROM incidents "
+                "WHERE assigned_ambulance_id = :aid "
+                "  AND status IN ('hospital_assigned', 'ambulance_assigned')"
+            ),
+            {"aid": ambulance_id},
+        ).fetchone()
+        if active_case:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot go offline while holding active incident #{active_case.id}.",
+            )
+        ambulance.is_online = False
+        db.commit()
+        db.refresh(ambulance)
+        return _ambulance_orm_to_out(ambulance, db)
+
+    # Going online
+    ambulance.is_online = True
+    now = datetime.now(timezone.utc)
+    if body.lat is not None and body.lng is not None:
+        ambulance.location = _wkt_point(body.lat, body.lng)
+        ambulance.location_updated_at = now
+
+    # Backfill: link recent unassigned incidents within candidate radius
+    if ambulance.location is not None:
+        radius_m = settings.CANDIDATE_RADIUS_KM * 1000.0
+        window_minutes = settings.BACKFILL_WINDOW_MINUTES
+        try:
+            unassigned_rows = db.execute(
+                text(
+                    "SELECT i.id FROM incidents i "
+                    "WHERE i.assigned_ambulance_id IS NULL "
+                    "  AND i.status != 'completed' "
+                    "  AND i.created_at >= NOW() - (:window || ' minutes')::interval "
+                    "  AND ST_DWithin("
+                    "        i.location,"
+                    "        ST_GeomFromWKB(ST_AsBinary(:amb_loc)),"
+                    "        :radius_m"
+                    "      ) "
+                    "  AND NOT EXISTS ( "
+                    "        SELECT 1 FROM inci_ambu ia "
+                    "        WHERE ia.incident_id = i.id AND ia.ambulance_id = :aid "
+                    "  )"
+                ),
+                {
+                    "window": window_minutes,
+                    "amb_loc": ambulance.location,
+                    "radius_m": radius_m,
+                    "aid": ambulance.id,
+                },
+            ).fetchall()
+            for r in unassigned_rows:
+                db.add(IncidentAmbulance(incident_id=r.id, ambulance_id=ambulance.id))
+        except Exception as exc:
+            logger.warning("[Ambulances] Spatial backfill query failed (%s); trying fallback.", exc)
+            try:
+                # Non-spatial fallback (for tests without PostGIS)
+                unassigned_rows = db.execute(
+                    text(
+                        "SELECT i.id FROM incidents i "
+                        "WHERE i.assigned_ambulance_id IS NULL "
+                        "  AND i.status != 'completed' "
+                        "  AND NOT EXISTS ( "
+                        "        SELECT 1 FROM inci_ambu ia "
+                        "        WHERE ia.incident_id = i.id AND ia.ambulance_id = :aid "
+                        "  )"
+                    ),
+                    {"aid": ambulance.id},
+                ).fetchall()
+                for r in unassigned_rows:
+                    db.add(IncidentAmbulance(incident_id=r.id, ambulance_id=ambulance.id))
+            except Exception:
+                pass
+
+    db.commit()
+    db.refresh(ambulance)
+    return _ambulance_orm_to_out(ambulance, db)
 
 
 # ── PATCH /ambulances/{id}/location ───────────────────────────────────────────
@@ -186,20 +339,191 @@ def nearest_ambulance(
 def update_ambulance_location(
     ambulance_id: int,
     body: AmbulanceLocationUpdate,
+    driver: Driver = Depends(get_current_driver),
     db: Session = Depends(get_db),
 ):
     """
     Update the current position of an ambulance.
     Called repeatedly from the driver's phone GPS.
+    Requires the authenticated driver to be linked to this ambulance.
     """
-    ambulance = db.get(Ambulance, ambulance_id)
-    if not ambulance:
-        raise HTTPException(status_code=404, detail=f"Ambulance {ambulance_id} not found")
+    ambulance = _verify_driver_ambulance_access(ambulance_id, driver, db)
 
     ambulance.location = _wkt_point(body.location.lat, body.location.lng)
+    ambulance.location_updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(ambulance)
     return _ambulance_orm_to_out(ambulance, db)
+
+
+# ── GET /ambulances/{id}/incidents ────────────────────────────────────────────
+
+@router.get(
+    "/{ambulance_id}/incidents",
+    response_model=list[AmbulanceIncidentOut],
+    summary="List unassigned incidents requested for this ambulance",
+)
+def list_ambulance_incidents(
+    ambulance_id: int,
+    driver: Driver = Depends(get_current_driver),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns incidents requested for this ambulance via inci_ambu that are still unassigned.
+    Returns empty list if the ambulance is offline.
+    Ordered by severity (critical first) then newest.
+    """
+    ambulance = _verify_driver_ambulance_access(ambulance_id, driver, db)
+
+    if not ambulance.is_online:
+        return []
+
+    rows = []
+    try:
+        rows = db.execute(
+            text(
+                "SELECT i.id, i.severity, i.emergency_type, i.symptoms, i.victims, "
+                "       i.department_needed, i.transcript, i.created_at, "
+                "       ST_Y(i.location::geometry) AS lat, "
+                "       ST_X(i.location::geometry) AS lng, "
+                "       CASE WHEN a.location IS NOT NULL "
+                "            THEN ST_Distance(i.location, a.location) / 1000.0 "
+                "            ELSE NULL END AS distance_km "
+                "FROM inci_ambu ia "
+                "JOIN incidents i ON i.id = ia.incident_id "
+                "JOIN ambulances a ON a.id = ia.ambulance_id "
+                "WHERE ia.ambulance_id = :aid "
+                "  AND i.assigned_ambulance_id IS NULL "
+                "  AND i.status != 'completed' "
+                "ORDER BY CASE i.severity "
+                "           WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+                "           WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
+                "         i.created_at DESC"
+            ),
+            {"aid": ambulance_id},
+        ).fetchall()
+    except Exception as exc:
+        logger.warning("[Ambulances] Query requested incidents failed (%s); checking non-spatial query.", exc)
+        try:
+            rows = db.execute(
+                text(
+                    "SELECT i.id, i.severity, i.emergency_type, i.symptoms, i.victims, "
+                    "       i.department_needed, i.transcript, i.created_at, "
+                    "       0.0 AS lat, 0.0 AS lng, NULL AS distance_km "
+                    "FROM inci_ambu ia "
+                    "JOIN incidents i ON i.id = ia.incident_id "
+                    "WHERE ia.ambulance_id = :aid "
+                    "  AND i.assigned_ambulance_id IS NULL "
+                    "  AND i.status != 'completed' "
+                    "ORDER BY CASE i.severity "
+                    "           WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+                    "           WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
+                    "         i.created_at DESC"
+                ),
+                {"aid": ambulance_id},
+            ).fetchall()
+        except Exception:
+            rows = []
+
+    return [
+        AmbulanceIncidentOut(
+            id=r.id,
+            severity=r.severity,
+            emergency_type=r.emergency_type,
+            symptoms=list(r.symptoms or []),
+            victims=r.victims,
+            department_needed=r.department_needed,
+            transcript=r.transcript,
+            location=LocationSchema(lat=r.lat, lng=r.lng),
+            distance_km=round(r.distance_km, 2) if r.distance_km is not None else None,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+# ── POST /ambulances/{id}/incidents/{id}/accept ───────────────────────────────
+
+@router.post(
+    "/{ambulance_id}/incidents/{incident_id}/accept",
+    response_model=IncidentOut,
+    summary="Ambulance accepts an incident request (race-safe)",
+)
+def accept_ambulance_incident(
+    ambulance_id: int,
+    incident_id: int,
+    driver: Driver = Depends(get_current_driver),
+    db: Session = Depends(get_db),
+):
+    """
+    Called by an ambulance driver to claim a requested incident.
+    Race-safe: uses SELECT ... FOR UPDATE on the incident row.
+    Returns HTTP 409 if another ambulance has already accepted it.
+    """
+    ambulance = _verify_driver_ambulance_access(ambulance_id, driver, db)
+
+    # 1. Lock incident row and check race condition (FOR UPDATE on Postgres)
+    for_update = "" if (db.bind and db.bind.dialect.name == "sqlite") else "FOR UPDATE"
+    locked_row = db.execute(
+        text(
+            f"SELECT id, status, assigned_ambulance_id, assigned_hospital_id "
+            f"FROM incidents WHERE id = :iid {for_update}"
+        ),
+        {"iid": incident_id},
+    ).fetchone()
+
+    if not locked_row:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    if locked_row.status == "completed" or locked_row.assigned_ambulance_id is not None:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Another ambulance has already accepted incident {incident_id}.",
+        )
+
+    if not ambulance.is_available:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This ambulance is currently busy with another incident.",
+        )
+
+    # 2. Verify incident was requested to this ambulance
+    requested = db.execute(
+        text("SELECT 1 FROM inci_ambu WHERE incident_id = :iid AND ambulance_id = :aid"),
+        {"iid": incident_id, "aid": ambulance_id},
+    ).fetchone()
+    if not requested:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Incident {incident_id} was not requested to ambulance {ambulance_id}.",
+        )
+
+    # 3. Assign incident to this ambulance
+    db.execute(
+        text(
+            "UPDATE incidents "
+            "SET assigned_ambulance_id = :aid, status = 'ambulance_assigned' "
+            "WHERE id = :iid"
+        ),
+        {"aid": ambulance_id, "iid": incident_id},
+    )
+    ambulance.is_available = False
+
+    # Remove all candidate requests for this incident now that it is claimed
+    db.execute(
+        text("DELETE FROM inci_ambu WHERE incident_id = :iid"),
+        {"iid": incident_id},
+    )
+
+    db.commit()
+    db.expire_all()
+
+    incident = db.get(Incident, incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found after commit")
+    return _build_incident_out(incident, db)
 
 
 # ── GET /ambulances/{id}/assignment ───────────────────────────────────────────

@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # can test without a real Google token. MUST be false in production.
     ALLOW_DEV_LOGIN: bool = False
 
+    # ── Ambulance dispatch tuning ─────────────────────────────────────────────
+    CANDIDATE_RADIUS_KM: float = 15.0
+    MAX_AMBULANCES_PER_INCIDENT: int = 5
+    LOCATION_FRESHNESS_SECONDS: int = 120
+    BACKFILL_WINDOW_MINUTES: int = 30
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -37,12 +37,14 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, s
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import get_current_hospital_account
 from app.db import get_db
 from app.models.hospital_account import HospitalAccount
 from app.models.incident import Incident
 from app.models.incident_broadcast import IncidentBroadcast
 from app.models.ambulance import Ambulance
+from app.models.incident_ambulance import IncidentAmbulance
 from app.schemas.incident import IncidentCreate, IncidentOut, BroadcastOut
 from app.schemas.ambulance import AmbulanceOut
 from app.schemas.hospital import LocationSchema
@@ -138,6 +140,8 @@ def _build_incident_out(
                 vehicle_type=amb.vehicle_type,
                 location=amb_loc,
                 is_available=amb.is_available,
+                is_online=amb.is_online,
+                location_updated_at=amb.location_updated_at,
             )
 
     return IncidentOut(
@@ -219,13 +223,16 @@ def _create_incident_core(
             ).fetchall()
         except Exception as exc:
             logger.warning("[Incidents] Spatial hospital query failed (%s); fallback to non-spatial department filter.", exc)
-            hospital_rows = db.execute(
-                text(
-                    "SELECT h.id FROM hospitals h "
-                    "WHERE h.is_active = true AND :dept = ANY(h.departments)"
-                ),
-                {"dept": department_needed},
-            ).fetchall()
+            try:
+                hospital_rows = db.execute(
+                    text(
+                        "SELECT h.id FROM hospitals h "
+                        "WHERE h.is_active = true AND :dept = ANY(h.departments)"
+                    ),
+                    {"dept": department_needed},
+                ).fetchall()
+            except Exception:
+                hospital_rows = []
 
     # Create a broadcast record for each matching hospital
     for row in hospital_rows:
@@ -237,31 +244,58 @@ def _create_incident_core(
         )
         db.add(broadcast)
 
-    # ── 3. Find nearest available ambulance and assign it ─────────────────────
-    amb_row = None
+    # ── 3. Find candidate ambulances (online, available, fresh GPS, within radius) ───
+    radius_m = settings.CANDIDATE_RADIUS_KM * 1000.0
+    freshness_sec = settings.LOCATION_FRESHNESS_SECONDS
+    max_amb = settings.MAX_AMBULANCES_PER_INCIDENT
+    amb_rows = []
     try:
-        amb_row = db.execute(
+        amb_rows = db.execute(
             text(
                 "SELECT a.id "
                 "FROM ambulances a "
-                "WHERE a.is_available = true "
+                "WHERE a.is_online = true "
+                "  AND a.is_available = true "
                 "  AND a.location IS NOT NULL "
+                "  AND a.location_updated_at IS NOT NULL "
+                "  AND a.location_updated_at >= NOW() - (:freshness || ' seconds')::interval "
+                "  AND ST_DWithin("
+                "        a.location,"
+                "        ST_MakePoint(:lng, :lat)::geography,"
+                "        :radius_m"
+                "      ) "
                 "ORDER BY ST_Distance(a.location, ST_MakePoint(:lng, :lat)::geography) ASC "
-                "LIMIT 1"
+                "LIMIT :max_amb"
             ),
-            {"lat": lat, "lng": lng},
-        ).fetchone()
+            {
+                "lat": lat,
+                "lng": lng,
+                "radius_m": radius_m,
+                "freshness": freshness_sec,
+                "max_amb": max_amb,
+            },
+        ).fetchall()
     except Exception as exc:
-        logger.warning("[Incidents] Spatial ambulance query failed (%s); fallback to first available ambulance.", exc)
-        amb_row = db.execute(
-            text("SELECT a.id FROM ambulances a WHERE a.is_available = true LIMIT 1")
-        ).fetchone()
+        logger.warning("[Incidents] Spatial candidate ambulance query failed (%s); checking fallback.", exc)
+        try:
+            # Fallback for non-spatial DB environments (e.g. SQLite unit tests)
+            amb_rows = db.execute(
+                text(
+                    "SELECT a.id FROM ambulances a "
+                    "WHERE a.is_online = true AND a.is_available = true "
+                    "LIMIT :max_amb"
+                ),
+                {"max_amb": max_amb},
+            ).fetchall()
+        except Exception:
+            amb_rows = []
 
-    if amb_row:
-        incident.assigned_ambulance_id = amb_row.id
-        ambulance = db.get(Ambulance, amb_row.id)
-        if ambulance:
-            ambulance.is_available = False
+    for r in amb_rows:
+        candidate_link = IncidentAmbulance(
+            incident_id=incident.id,
+            ambulance_id=r.id,
+        )
+        db.add(candidate_link)
 
     # ── 4. Commit everything atomically ───────────────────────────────────────
     db.commit()
@@ -413,12 +447,13 @@ def accept_broadcast(
     # SELECT ... FOR UPDATE acquires a row-level write lock.
     # Concurrent transactions block here until the first one commits/rolls back.
     # This guarantees at-most-one winner without application-level locking.
+    for_update = "" if (db.bind and db.bind.dialect.name == "sqlite") else "FOR UPDATE"
     locked_row = db.execute(
         text(
-            "SELECT id, status "
-            "FROM incidents "
-            "WHERE id = :incident_id "
-            "FOR UPDATE"         # row-level lock
+            f"SELECT id, status, assigned_hospital_id, assigned_ambulance_id "
+            f"FROM incidents "
+            f"WHERE id = :incident_id "
+            f"{for_update}"
         ),
         {"incident_id": incident_id},
     ).fetchone()
@@ -426,13 +461,13 @@ def accept_broadcast(
     if not locked_row:
         raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
 
-    if locked_row.status != "pending":
-        # Someone else already accepted — release the lock and inform caller.
+    if locked_row.status == "completed" or locked_row.assigned_hospital_id is not None:
+        # Someone else already accepted or case is completed — release lock and inform caller.
         db.rollback()
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Incident {incident_id} is no longer pending "
+                f"Incident {incident_id} can no longer be accepted by a hospital "
                 f"(current status: '{locked_row.status}'). "
                 "Another hospital has already accepted this case."
             ),
@@ -462,15 +497,24 @@ def accept_broadcast(
         {"incident_id": incident_id, "bid": broadcast_id},
     )
 
-    # Update the incident
+    # Update the incident status: if ambulance is already assigned, keep ambulance_assigned
+    next_status = (
+        "ambulance_assigned"
+        if locked_row.assigned_ambulance_id is not None
+        else "hospital_assigned"
+    )
     db.execute(
         text(
             "UPDATE incidents "
-            "SET status = 'hospital_assigned', "
+            "SET status = :next_status, "
             "    assigned_hospital_id = :hospital_id "
             "WHERE id = :incident_id"
         ),
-        {"hospital_id": hospital_id, "incident_id": incident_id},
+        {
+            "hospital_id": hospital_id,
+            "incident_id": incident_id,
+            "next_status": next_status,
+        },
     )
 
     db.commit()

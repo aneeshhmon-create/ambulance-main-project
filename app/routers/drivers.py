@@ -43,6 +43,8 @@ def get_my_ambulances(
             registration_number=link.ambulance.registration_number,
             vehicle_type=link.ambulance.vehicle_type,
             is_available=link.ambulance.is_available,
+            is_online=link.ambulance.is_online,
+            location_updated_at=link.ambulance.location_updated_at,
         )
         for link in driver.ambulance_links
     ]
