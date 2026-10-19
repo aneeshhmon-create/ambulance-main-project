@@ -561,6 +561,133 @@ def accept_ambulance_incident(
     return _build_incident_out(incident, db)
 
 
+# ── POST /ambulances/{id}/incidents/{id}/cancel ───────────────────────────────
+
+@router.post(
+    "/{ambulance_id}/incidents/{incident_id}/cancel",
+    response_model=IncidentOut,
+    summary="Driver cancels an accepted incident (re-broadcasts to other ambulances)",
+)
+def cancel_ambulance_incident(
+    ambulance_id: int,
+    incident_id: int,
+    driver: Driver = Depends(get_current_driver),
+    db: Session = Depends(get_db),
+):
+    """
+    Called by the driver when they want to cancel a mission they accepted.
+
+    Effect:
+    - Clears `assigned_ambulance_id` and `assigned_hospital_id` on the incident.
+    - Resets status back to `'pending'`.
+    - Marks all existing `inci_ambu` rows for this incident as deleted
+      (removes them) and re-inserts candidate links for every *online, available*
+      ambulance that is NOT the cancelling one, so they appear in those drivers'
+      home-screen lists immediately.
+    - Sets the cancelling ambulance `is_available = true` again.
+
+    Returns HTTP 409 if the incident is already completed.
+    Returns HTTP 403 if this ambulance is not the assigned ambulance for the incident.
+    """
+    ambulance = _verify_driver_ambulance_access(ambulance_id, driver, db)
+
+    # Lock the incident row
+    for_update = "" if (db.bind and db.bind.dialect.name == "sqlite") else "FOR UPDATE"
+    locked_row = db.execute(
+        text(
+            f"SELECT id, status, assigned_ambulance_id "
+            f"FROM incidents WHERE id = :iid {for_update}"
+        ),
+        {"iid": incident_id},
+    ).fetchone()
+
+    if not locked_row:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    if locked_row.status == "completed":
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Incident {incident_id} is already completed and cannot be cancelled.",
+        )
+
+    if locked_row.assigned_ambulance_id != ambulance_id:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Ambulance {ambulance_id} is not the assigned ambulance for incident {incident_id}.",
+        )
+
+    # 1. Unassign the incident and reset to pending
+    db.execute(
+        text(
+            "UPDATE incidents "
+            "SET assigned_ambulance_id = NULL, "
+            "    assigned_hospital_id  = NULL, "
+            "    status                = 'pending' "
+            "WHERE id = :iid"
+        ),
+        {"iid": incident_id},
+    )
+
+    # 2. Free the ambulance
+    db.execute(
+        text("UPDATE ambulances SET is_available = true WHERE id = :aid"),
+        {"aid": ambulance_id},
+    )
+
+    # 3. Clear any stale inci_ambu rows for this incident
+    db.execute(
+        text("DELETE FROM inci_ambu WHERE incident_id = :iid"),
+        {"iid": incident_id},
+    )
+
+    # 4. Re-broadcast: insert inci_ambu for every online+available ambulance
+    #    except the one that just cancelled.
+    try:
+        candidate_rows = db.execute(
+            text(
+                "SELECT a.id FROM ambulances a "
+                "WHERE a.is_online = true "
+                "  AND a.is_available = true "
+                "  AND a.id != :exclude_aid "
+                "  AND a.location IS NOT NULL "
+                "ORDER BY ST_Distance("
+                "    a.location, "
+                "    (SELECT location FROM incidents WHERE id = :iid)"
+                ") ASC "
+                f"LIMIT {settings.MAX_AMBULANCES_PER_INCIDENT}"
+            ),
+            {"iid": incident_id, "exclude_aid": ambulance_id},
+        ).fetchall()
+    except Exception as exc:
+        logger.warning(
+            "[Ambulances] Spatial re-broadcast query failed (%s); falling back to non-spatial.", exc
+        )
+        try:
+            candidate_rows = db.execute(
+                text(
+                    "SELECT a.id FROM ambulances a "
+                    "WHERE a.is_online = true AND a.is_available = true AND a.id != :exclude_aid "
+                    f"LIMIT {settings.MAX_AMBULANCES_PER_INCIDENT}"
+                ),
+                {"exclude_aid": ambulance_id},
+            ).fetchall()
+        except Exception:
+            candidate_rows = []
+
+    for r in candidate_rows:
+        db.add(IncidentAmbulance(incident_id=incident_id, ambulance_id=r.id))
+
+    db.commit()
+    db.expire_all()
+
+    incident = db.get(Incident, incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found after commit")
+    return _build_incident_out(incident, db)
+
+
 # ── GET /ambulances/{id}/assignment ───────────────────────────────────────────
 
 @router.get(

@@ -330,14 +330,59 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   // ── Cancel & Back Navigation ───────────────────────────────────────────────
 
-  void _handleCancel() {
-    // TODO: In a future feature, notify backend of driver cancellation and handle state release.
-    // For now, cancel navigates back to Home screen only.
-    Navigator.of(context).pop();
-  }
+  Future<void> _handleCancel() async {
+    // Ask for confirmation before releasing the incident
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel Mission?'),
+        content: const Text(
+          'This will release the incident so other ambulances can accept it. '
+          'Are you sure you want to cancel?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Stay'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Cancel Mission'),
+          ),
+        ],
+      ),
+    );
 
-  // TODO: Hook for future feature: arrived at hospital -> navigate to completed page.
-  // void _onArrivedAtHospital() { ... }
+    if (confirmed != true || !mounted) return;
+
+    // Show a loading indicator while the cancellation is in flight
+    _stopPolling();
+    setState(() => _loading = true);
+
+    try {
+      await DriverApiService.cancelIncident(
+        ambulanceId: widget.ambulanceId,
+        incidentId: widget.incidentId,
+      );
+      if (!mounted) return;
+      // Pop back to Home; home screen will refresh incident list
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      // Restart polling so the driver isn't stuck
+      _startPolling();
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not cancel: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
 
   // ── UI Build ───────────────────────────────────────────────────────────────
 

@@ -265,6 +265,31 @@ class DriverApiService {
     }
   }
 
+  /// POST /ambulances/{ambulanceId}/incidents/{incidentId}/cancel
+  /// Cancels an accepted incident: unassigns the ambulance, resets the
+  /// incident to pending, and re-broadcasts it to other online ambulances.
+  static Future<void> cancelIncident({
+    required int ambulanceId,
+    required int incidentId,
+  }) async {
+    final headers = await _authHeaders();
+    final resp = await http
+        .post(
+          Uri.parse(_base('/$ambulanceId/incidents/$incidentId/cancel')),
+          headers: headers,
+        )
+        .timeout(const Duration(seconds: 10));
+    if (resp.statusCode == 409) {
+      throw _detail(resp) ?? 'Incident is already completed and cannot be cancelled.';
+    }
+    if (resp.statusCode == 403) {
+      throw _detail(resp) ?? 'You are not the assigned driver for this incident.';
+    }
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw _detail(resp) ?? 'Server error ${resp.statusCode}';
+    }
+  }
+
   /// GET /ambulances/{id}/assignment
   /// Polls the active assignment. Returns [assigned=false] when idle.
   static Future<ActiveAssignment> fetchAssignment(int ambulanceId) async {
