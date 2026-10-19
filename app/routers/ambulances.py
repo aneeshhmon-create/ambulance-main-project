@@ -274,55 +274,86 @@ def update_ambulance_online(
         ambulance.location_updated_at = now
 
     # Backfill: link recent unassigned incidents within candidate radius
-    if ambulance.location is not None:
-        radius_m = settings.CANDIDATE_RADIUS_KM * 1000.0
-        window_minutes = settings.BACKFILL_WINDOW_MINUTES
+    radius_m = settings.CANDIDATE_RADIUS_KM * 1000.0
+    window_minutes = settings.BACKFILL_WINDOW_MINUTES
+    unassigned_ids = []
+
+    if body.lat is not None and body.lng is not None:
         try:
-            unassigned_rows = db.execute(
-                text(
-                    "SELECT i.id FROM incidents i "
-                    "WHERE i.assigned_ambulance_id IS NULL "
-                    "  AND i.status != 'completed' "
-                    "  AND i.created_at >= NOW() - (:window || ' minutes')::interval "
-                    "  AND ST_DWithin("
-                    "        i.location,"
-                    "        ST_GeomFromWKB(ST_AsBinary(:amb_loc)),"
-                    "        :radius_m"
-                    "      ) "
-                    "  AND NOT EXISTS ( "
-                    "        SELECT 1 FROM inci_ambu ia "
-                    "        WHERE ia.incident_id = i.id AND ia.ambulance_id = :aid "
-                    "  )"
-                ),
-                {
-                    "window": window_minutes,
-                    "amb_loc": ambulance.location,
-                    "radius_m": radius_m,
-                    "aid": ambulance.id,
-                },
-            ).fetchall()
-            for r in unassigned_rows:
-                db.add(IncidentAmbulance(incident_id=r.id, ambulance_id=ambulance.id))
-        except Exception as exc:
-            logger.warning("[Ambulances] Spatial backfill query failed (%s); trying fallback.", exc)
-            try:
-                # Non-spatial fallback (for tests without PostGIS)
-                unassigned_rows = db.execute(
+            with db.begin_nested():
+                rows = db.execute(
                     text(
                         "SELECT i.id FROM incidents i "
                         "WHERE i.assigned_ambulance_id IS NULL "
                         "  AND i.status != 'completed' "
+                        "  AND i.created_at >= NOW() - (:window || ' minutes')::interval "
+                        "  AND ST_DWithin("
+                        "        i.location,"
+                        "        ST_MakePoint(:lng, :lat)::geography,"
+                        "        :radius_m"
+                        "      ) "
                         "  AND NOT EXISTS ( "
                         "        SELECT 1 FROM inci_ambu ia "
                         "        WHERE ia.incident_id = i.id AND ia.ambulance_id = :aid "
                         "  )"
                     ),
-                    {"aid": ambulance.id},
+                    {
+                        "window": window_minutes,
+                        "lat": body.lat,
+                        "lng": body.lng,
+                        "radius_m": radius_m,
+                        "aid": ambulance.id,
+                    },
                 ).fetchall()
-                for r in unassigned_rows:
-                    db.add(IncidentAmbulance(incident_id=r.id, ambulance_id=ambulance.id))
+                unassigned_ids = [r.id for r in rows]
+        except Exception as exc:
+            logger.warning("[Ambulances] Spatial backfill query failed (%s); trying fallback.", exc)
+            try:
+                with db.begin_nested():
+                    rows = db.execute(
+                        text(
+                            "SELECT i.id FROM incidents i "
+                            "WHERE i.assigned_ambulance_id IS NULL "
+                            "  AND i.status != 'completed' "
+                            "  AND NOT EXISTS ( "
+                            "        SELECT 1 FROM inci_ambu ia "
+                            "        WHERE ia.incident_id = i.id AND ia.ambulance_id = :aid "
+                            "  )"
+                        ),
+                        {"aid": ambulance.id},
+                    ).fetchall()
+                    unassigned_ids = [r.id for r in rows]
             except Exception:
                 pass
+    elif ambulance.location is not None:
+        try:
+            with db.begin_nested():
+                rows = db.execute(
+                    text(
+                        "SELECT i.id FROM incidents i, ambulances a "
+                        "WHERE a.id = :aid "
+                        "  AND a.location IS NOT NULL "
+                        "  AND i.assigned_ambulance_id IS NULL "
+                        "  AND i.status != 'completed' "
+                        "  AND i.created_at >= NOW() - (:window || ' minutes')::interval "
+                        "  AND ST_DWithin(i.location, a.location, :radius_m) "
+                        "  AND NOT EXISTS ( "
+                        "        SELECT 1 FROM inci_ambu ia "
+                        "        WHERE ia.incident_id = i.id AND ia.ambulance_id = :aid "
+                        "  )"
+                    ),
+                    {
+                        "window": window_minutes,
+                        "radius_m": radius_m,
+                        "aid": ambulance.id,
+                    },
+                ).fetchall()
+                unassigned_ids = [r.id for r in rows]
+        except Exception as exc:
+            logger.warning("[Ambulances] Spatial backfill query from DB location failed (%s).", exc)
+
+    for iid in unassigned_ids:
+        db.add(IncidentAmbulance(incident_id=iid, ambulance_id=ambulance.id))
 
     db.commit()
     db.refresh(ambulance)
