@@ -6,11 +6,14 @@
 //   • IncidentTopStrip expand and cancel callbacks
 //   • NavigationStatusChip rendering
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 
 import 'package:ambulance_app/driver_app/models/incident_detail.dart';
+import 'package:ambulance_app/driver_app/screens/navigation_screen.dart';
 import 'package:ambulance_app/driver_app/services/routing_service.dart';
 import 'package:ambulance_app/driver_app/widgets/incident_top_strip.dart';
 import 'package:ambulance_app/driver_app/widgets/navigation_status_chip.dart';
@@ -186,6 +189,74 @@ void main() {
 
       expect(find.textContaining('Aster Medcity'), findsOneWidget);
       expect(find.textContaining('12.4 km (19 min)'), findsOneWidget);
+    });
+  });
+
+  group('NavigationScreen immediate loading', () {
+    testWidgets('renders immediately without showing loading spinner when initialDetail is provided',
+        (tester) async {
+      final detail = DriverIncidentDetail(
+        id: 777,
+        status: 'ambulance_assigned',
+        severity: 'critical',
+        emergencyType: 'Cardiac Arrest',
+        symptoms: const ['Chest pain'],
+        victims: 1,
+        location: const LatLng(9.9312, 76.2673),
+        createdAt: DateTime.now(),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: NavigationScreen(
+            incidentId: 777,
+            ambulanceId: 1,
+            initialDetail: detail,
+          ),
+        ),
+      );
+
+      // Verify that the loading spinner / text is NOT displayed
+      expect(find.text('Loading incident #777…'), findsNothing);
+      // Verify that the incident strip with incident # and emergency type IS displayed immediately
+      expect(find.textContaining('#777'), findsOneWidget);
+      expect(find.textContaining('Cardiac Arrest'), findsOneWidget);
+    });
+
+    testWidgets('shows error dialog when acceptFuture rejects', (tester) async {
+      final detail = DriverIncidentDetail(
+        id: 888,
+        status: 'ambulance_assigned',
+        severity: 'high',
+        emergencyType: 'Trauma',
+        symptoms: const ['Bleeding'],
+        victims: 1,
+        location: const LatLng(9.9312, 76.2673),
+        createdAt: DateTime.now(),
+      );
+
+      final completer = Completer<void>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: NavigationScreen(
+            incidentId: 888,
+            ambulanceId: 1,
+            initialDetail: detail,
+            acceptFuture: completer.future,
+          ),
+        ),
+      );
+
+      completer.completeError('Another ambulance already accepted this incident.');
+      await tester.pumpAndSettle();
+
+      expect(find.text('Could Not Accept Incident'), findsOneWidget);
+      expect(
+        find.text('Another ambulance has already accepted this incident.'),
+        findsOneWidget,
+      );
+      expect(find.text('Return to Home'), findsOneWidget);
     });
   });
 }

@@ -27,6 +27,7 @@ const _kAmbulanceIdKey = 'selected_ambulance_id';
 const _kAmbulanceRegKey = 'selected_ambulance_reg';
 const _kAmbulanceTypeKey = 'selected_ambulance_type';
 const _kAmbulanceOnlineKey = 'selected_ambulance_online';
+const _kActiveIncidentIdKey = 'driver_active_incident_id';
 
 // ── Exceptions ────────────────────────────────────────────────────────────────
 
@@ -336,6 +337,22 @@ class AuthService {
   /// Update only the persisted isOnline flag (called by home screen after toggle).
   static Future<void> updateStoredOnlineState(bool isOnline) async {
     await _storage.write(key: _kAmbulanceOnlineKey, value: isOnline.toString());
+  }
+
+  /// Persist the active incident ID during driving navigation.
+  static Future<void> saveActiveIncidentId(int incidentId) async {
+    await _storage.write(key: _kActiveIncidentIdKey, value: incidentId.toString());
+  }
+
+  /// Get the active incident ID, or null if none.
+  static Future<int?> getActiveIncidentId() async {
+    final idStr = await _storage.read(key: _kActiveIncidentIdKey);
+    return idStr != null ? int.tryParse(idStr) : null;
+  }
+
+  /// Clear the active incident ID (e.g. mission completed or cancelled).
+  static Future<void> clearActiveIncidentId() async {
+    await _storage.delete(key: _kActiveIncidentIdKey);
   }
 
   /// Clear everything — token, driver profile, selected ambulance.

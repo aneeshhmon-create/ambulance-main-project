@@ -33,11 +33,13 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
 import 'package:ambulance_app/driver_app/models/driver.dart';
+import 'package:ambulance_app/driver_app/models/incident_detail.dart';
 import 'package:ambulance_app/driver_app/services/auth_service.dart';
 import 'package:ambulance_app/driver_app/services/driver_api_service.dart';
 import 'package:ambulance_app/driver_app/screens/auth_page.dart';
 import 'package:ambulance_app/driver_app/screens/navigation_screen.dart';
 import 'package:ambulance_app/driver_app/widgets/home_footer.dart';
+import 'package:latlong2/latlong.dart' as ll2;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -357,29 +359,48 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
   Future<void> _accept(IncidentRequest incident) async {
     if (_acceptingIds.contains(incident.id)) return;
     setState(() => _acceptingIds.add(incident.id));
+
+    // Convert IncidentRequest to DriverIncidentDetail so NavigationScreen can
+    // immediately render the map, patient location, and incident details without waiting.
+    final initialDetail = DriverIncidentDetail(
+      id: incident.id,
+      status: 'ambulance_assigned',
+      severity: incident.severity,
+      emergencyType: incident.emergencyType,
+      symptoms: incident.symptoms,
+      victims: incident.victims,
+      departmentNeeded: incident.departmentNeeded,
+      transcript: incident.transcript,
+      location: ll2.LatLng(incident.location.lat, incident.location.lng),
+      createdAt: incident.createdAt,
+      assignedHospital: null,
+    );
+
+    // Concurrently trigger backend accept call
+    final acceptFuture = DriverApiService.acceptIncident(
+      ambulanceId: widget.ambulance.id,
+      incidentId: incident.id,
+    );
+
     try {
-      await DriverApiService.acceptIncident(
-        ambulanceId: widget.ambulance.id,
-        incidentId: incident.id,
-      );
-      // Refresh incident list in background
-      _poll();
-      if (!mounted) return;
-      // Navigate to the Navigation page
+      // Immediately open NavigationScreen!
       await Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => NavigationScreen(
             incidentId: incident.id,
             ambulanceId: widget.ambulance.id,
+            initialDetail: initialDetail,
+            acceptFuture: acceptFuture,
           ),
         ),
       );
-      // On return, refresh again in case the user backed out
-      if (mounted) _poll();
     } catch (e) {
       if (mounted) _showError(e.toString());
     } finally {
-      if (mounted) setState(() => _acceptingIds.remove(incident.id));
+      if (mounted) {
+        setState(() => _acceptingIds.remove(incident.id));
+        _poll();
+      }
     }
   }
 
@@ -392,7 +413,14 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (ctx) => _IncidentDetailSheet(incident: incident),
+      builder: (ctx) => _IncidentDetailSheet(
+        incident: incident,
+        accepting: _acceptingIds.contains(incident.id),
+        onAccept: () {
+          Navigator.of(ctx).pop();
+          _accept(incident);
+        },
+      ),
     );
   }
 
@@ -877,8 +905,14 @@ class _IncidentTile extends StatelessWidget {
 
 class _IncidentDetailSheet extends StatelessWidget {
   final IncidentRequest incident;
+  final bool accepting;
+  final VoidCallback onAccept;
 
-  const _IncidentDetailSheet({required this.incident});
+  const _IncidentDetailSheet({
+    required this.incident,
+    required this.accepting,
+    required this.onAccept,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1073,6 +1107,31 @@ class _IncidentDetailSheet extends StatelessWidget {
                     const SizedBox(height: 16),
                   ],
 
+                  // Accept button in details sheet
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: FilledButton.icon(
+                      onPressed: accepting ? null : onAccept,
+                      icon: accepting
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.check_circle_outline_rounded),
+                      label: Text(
+                        accepting ? 'Accepting…' : 'Accept Incident',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 24),
                 ],
               ),

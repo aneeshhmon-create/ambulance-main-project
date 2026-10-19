@@ -122,11 +122,15 @@ List<LatLng> _trimRoute(List<LatLng> points, LatLng driver) {
 class NavigationScreen extends StatefulWidget {
   final int incidentId;
   final int ambulanceId;
+  final DriverIncidentDetail? initialDetail;
+  final Future<void>? acceptFuture;
 
   const NavigationScreen({
     super.key,
     required this.incidentId,
     required this.ambulanceId,
+    this.initialDetail,
+    this.acceptFuture,
   });
 
   @override
@@ -143,6 +147,7 @@ class _NavigationScreenState extends State<NavigationScreen>
   String? _nonBlockingError;
   bool _pollingActive = false;
   Timer? _pollTimer;
+  bool _fatalErrorOccurred = false;
 
   // ── driver GPS & animation ────────────────────────────────────────────────
   /// Raw GPS position from the stream (used as animation target).
@@ -188,8 +193,19 @@ class _NavigationScreenState extends State<NavigationScreen>
       duration: const Duration(milliseconds: 600),
     )..addListener(_onAnimTick);
 
+    if (widget.initialDetail != null) {
+      _incident = widget.initialDetail;
+      _loading = false;
+    }
+
+    AuthService.saveActiveIncidentId(widget.incidentId);
     _initGps();
-    _fetchInitialIncident();
+
+    if (widget.acceptFuture != null) {
+      _handleAcceptFuture();
+    } else {
+      _fetchInitialIncident();
+    }
   }
 
   @override
@@ -338,10 +354,12 @@ class _NavigationScreenState extends State<NavigationScreen>
   // ── incident fetch & polling ──────────────────────────────────────────────
 
   Future<void> _fetchInitialIncident() async {
-    setState(() {
-      _loading = true;
-      _nonBlockingError = null;
-    });
+    if (_incident == null) {
+      setState(() {
+        _loading = true;
+        _nonBlockingError = null;
+      });
+    }
     try {
       final detail = await DriverApiService.fetchIncidentDetail(
         ambulanceId: widget.ambulanceId,
@@ -367,9 +385,30 @@ class _NavigationScreenState extends State<NavigationScreen>
     }
   }
 
-  void _startPolling() {
+  void _handleAcceptFuture() {
+    widget.acceptFuture!.then((_) {
+      if (!mounted) return;
+      AuthService.saveActiveIncidentId(widget.incidentId);
+      _startPolling(immediate: true);
+    }).catchError((e) {
+      if (!mounted) return;
+      AuthService.clearActiveIncidentId();
+      _stopPolling();
+      final err = e.toString();
+      final msg = err.contains('409') ||
+              err.toLowerCase().contains('already accepted')
+          ? 'Another ambulance has already accepted this incident.'
+          : err;
+      _showFatalDialog(title: 'Could Not Accept Incident', message: msg);
+    });
+  }
+
+  void _startPolling({bool immediate = false}) {
     _pollTimer?.cancel();
     _pollingActive = true;
+    if (immediate) {
+      _pollIncidentDetail();
+    }
     _pollTimer = Timer.periodic(
       const Duration(seconds: 4),
       (_) => _pollIncidentDetail(),
@@ -464,6 +503,8 @@ class _NavigationScreenState extends State<NavigationScreen>
   }
 
   void _showFatalDialog({required String title, required String message}) {
+    _fatalErrorOccurred = true;
+    AuthService.clearActiveIncidentId();
     showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -518,6 +559,7 @@ class _NavigationScreenState extends State<NavigationScreen>
   // ── cancel ────────────────────────────────────────────────────────────────
 
   Future<void> _handleCancel() async {
+    if (_fatalErrorOccurred) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -550,6 +592,7 @@ class _NavigationScreenState extends State<NavigationScreen>
         ambulanceId: widget.ambulanceId,
         incidentId: widget.incidentId,
       );
+      await AuthService.clearActiveIncidentId();
       if (!mounted) return;
       Navigator.of(context).pop();
     } catch (e) {
@@ -573,9 +616,9 @@ class _NavigationScreenState extends State<NavigationScreen>
     final cs = theme.colorScheme;
 
     return PopScope(
-      canPop: false,
+      canPop: _fatalErrorOccurred,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _handleCancel();
+        if (!didPop && !_fatalErrorOccurred) _handleCancel();
       },
       child: Scaffold(
         backgroundColor: Colors.black,
