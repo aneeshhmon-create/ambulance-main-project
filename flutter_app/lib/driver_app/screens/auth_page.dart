@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:ambulance_app/driver_app/models/driver.dart';
 import 'package:ambulance_app/driver_app/services/auth_service.dart';
 import 'package:ambulance_app/driver_app/screens/home_screen.dart';
+import 'package:ambulance_app/driver_app/screens/navigation_screen.dart';
 import 'package:ambulance_app/driver_app/screens/register_screen.dart';
+import 'package:ambulance_app/driver_app/services/driver_api_service.dart';
 
 enum AuthStage {
   loading,
@@ -56,6 +58,47 @@ class _AuthPageState extends State<AuthPage> {
 
       if (token != null && driver != null) {
         if (savedAmbulance != null && mounted) {
+          // Check if there was an active incident in progress
+          int? activeIncidentId =
+              await AuthService.getActiveIncidentId().timeout(
+            const Duration(seconds: 1),
+            onTimeout: () => null,
+          );
+
+          // If not in local storage, check backend for active assignment too
+          if (activeIncidentId == null) {
+            try {
+              final assignment = await DriverApiService.fetchAssignment(
+                savedAmbulance.id,
+              ).timeout(const Duration(seconds: 2));
+              if (assignment.assigned && assignment.incidentId != null) {
+                activeIncidentId = assignment.incidentId;
+                await AuthService.saveActiveIncidentId(activeIncidentId!);
+              }
+            } catch (_) {}
+          }
+
+          if (activeIncidentId != null && mounted) {
+            // Land directly on NavigationScreen with DriverHomeScreen as base
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(
+                builder: (_) => DriverHomeScreen(
+                  driver: driver,
+                  ambulance: savedAmbulance,
+                ),
+              ),
+            );
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => NavigationScreen(
+                  incidentId: activeIncidentId!,
+                  ambulanceId: savedAmbulance.id,
+                ),
+              ),
+            );
+            return;
+          }
+
           // Both token and ambulance exist -> go straight to Home
           Navigator.of(context).pushReplacement(
             MaterialPageRoute(
@@ -270,10 +313,7 @@ class _AuthPageState extends State<AuthPage> {
       MaterialPageRoute(
         builder: (_) => DriverHomeScreen(
           driver: _driver!,
-          ambulance: (
-            id: _selectedAmbulance!.id,
-            registrationNumber: _selectedAmbulance!.registrationNumber,
-          ),
+          ambulance: _selectedAmbulance!,
         ),
       ),
     );

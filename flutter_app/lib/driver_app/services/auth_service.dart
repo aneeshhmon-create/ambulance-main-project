@@ -25,6 +25,9 @@ const _kDriverPhoneKey = 'driver_phone';
 const _kDriverPhotoKey = 'driver_photo_url';
 const _kAmbulanceIdKey = 'selected_ambulance_id';
 const _kAmbulanceRegKey = 'selected_ambulance_reg';
+const _kAmbulanceTypeKey = 'selected_ambulance_type';
+const _kAmbulanceOnlineKey = 'selected_ambulance_online';
+const _kActiveIncidentIdKey = 'driver_active_incident_id';
 
 // ── Exceptions ────────────────────────────────────────────────────────────────
 
@@ -307,17 +310,49 @@ class AuthService {
   }
 
   /// Returns the saved selected ambulance, or null if none was chosen.
-  static Future<({int id, String registrationNumber})?> getSelectedAmbulance() async {
+  static Future<AmbulanceModel?> getSelectedAmbulance() async {
     final idStr = await _storage.read(key: _kAmbulanceIdKey);
     final reg = await _storage.read(key: _kAmbulanceRegKey);
     if (idStr == null || reg == null) return null;
-    return (id: int.parse(idStr), registrationNumber: reg);
+    final onlineStr = await _storage.read(key: _kAmbulanceOnlineKey);
+    return AmbulanceModel(
+      id: int.parse(idStr),
+      registrationNumber: reg,
+      vehicleType: await _storage.read(key: _kAmbulanceTypeKey),
+      isAvailable: true,
+      isOnline: onlineStr == 'true',
+    );
   }
 
   /// Persist the chosen ambulance locally.
   static Future<void> saveSelectedAmbulance(AmbulanceModel ambulance) async {
     await _storage.write(key: _kAmbulanceIdKey, value: ambulance.id.toString());
     await _storage.write(key: _kAmbulanceRegKey, value: ambulance.registrationNumber);
+    if (ambulance.vehicleType != null) {
+      await _storage.write(key: _kAmbulanceTypeKey, value: ambulance.vehicleType!);
+    }
+    await _storage.write(key: _kAmbulanceOnlineKey, value: ambulance.isOnline.toString());
+  }
+
+  /// Update only the persisted isOnline flag (called by home screen after toggle).
+  static Future<void> updateStoredOnlineState(bool isOnline) async {
+    await _storage.write(key: _kAmbulanceOnlineKey, value: isOnline.toString());
+  }
+
+  /// Persist the active incident ID during driving navigation.
+  static Future<void> saveActiveIncidentId(int incidentId) async {
+    await _storage.write(key: _kActiveIncidentIdKey, value: incidentId.toString());
+  }
+
+  /// Get the active incident ID, or null if none.
+  static Future<int?> getActiveIncidentId() async {
+    final idStr = await _storage.read(key: _kActiveIncidentIdKey);
+    return idStr != null ? int.tryParse(idStr) : null;
+  }
+
+  /// Clear the active incident ID (e.g. mission completed or cancelled).
+  static Future<void> clearActiveIncidentId() async {
+    await _storage.delete(key: _kActiveIncidentIdKey);
   }
 
   /// Clear everything — token, driver profile, selected ambulance.

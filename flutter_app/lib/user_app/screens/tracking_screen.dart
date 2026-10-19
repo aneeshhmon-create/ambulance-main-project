@@ -8,6 +8,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'package:ambulance_app/user_app/config/routes.dart';
 import 'package:ambulance_app/user_app/models/incident.dart';
 import 'package:ambulance_app/user_app/services/api_service.dart';
 
@@ -200,6 +201,27 @@ class _TrackingScreenState extends State<TrackingScreen> {
 
             // Status card with friendly message
             _StatusCard(incident: incident),
+            const SizedBox(height: 20),
+
+            // Opens the live map (ambulance position, hospital and routes)
+            ElevatedButton.icon(
+              key: const ValueKey('live_tracking_button'),
+              onPressed: () => Navigator.of(context).pushNamed(
+                AppRoutes.liveTracking,
+                arguments: incident.id,
+              ),
+              icon: const Icon(Icons.map_rounded),
+              label: const Text('Live Tracking',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red[700],
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
             const SizedBox(height: 20),
 
             // Visual stepper

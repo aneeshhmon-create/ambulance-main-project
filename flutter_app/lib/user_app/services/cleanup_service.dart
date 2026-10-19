@@ -15,6 +15,7 @@ class CleanupService {
     Future<Directory> Function()? getTempDir,
   }) async {
     int deletedCount = 0;
+    if (kIsWeb) return 0; // no temp directory on web
     try {
       final tempDir = await (getTempDir ?? getTemporaryDirectory)();
       if (!await tempDir.exists()) return 0;

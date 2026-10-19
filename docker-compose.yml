@@ -11,7 +11,14 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./app:/app/app          # live-reload during development
+      - ./app:/app/app                    # live-reload: Python source
+      - ./alembic:/app/alembic            # live-reload: migrations
+      - ./alembic.ini:/app/alembic.ini    # alembic config
+      - ./app/tests:/app/app/tests        # live-reload: tests
+      - ./create_demo_incidents.py:/app/create_demo_incidents.py
+      - ./accept_as_hospital.py:/app/accept_as_hospital.py
+      - ./seed_demo_drivers.py:/app/seed_demo_drivers.py
+      - ./seed_hospitals.py:/app/seed_hospitals.py
     depends_on:
       db:
         condition: service_healthy

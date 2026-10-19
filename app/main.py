@@ -80,11 +80,12 @@ app.add_middleware(
 # ── Routers ──────────────────────────────────────────────────────────────────
 from app.routers import hospitals, ambulances, incidents, users
 from app.routers import test_transcribe  # ← Day-5 only; remove on Day 6
-from app.routers import auth, drivers
+from app.routers import auth, drivers, tracking
 
 app.include_router(hospitals.router,     prefix="/hospitals",  tags=["Hospitals"])
 app.include_router(ambulances.router,    prefix="/ambulances", tags=["Ambulances"])
 app.include_router(incidents.router,     prefix="/incidents",  tags=["Incidents"])
+app.include_router(tracking.router,      prefix="/incidents",  tags=["Incidents"])
 app.include_router(users.router,         prefix="/users",      tags=["Users"])
 app.include_router(test_transcribe.router, prefix="/test",     tags=["Test / Validation"])
 app.include_router(auth.router,          prefix="/auth",       tags=["Auth"])

@@ -14,6 +14,8 @@ from app.models.incident_broadcast import IncidentBroadcast
 from app.models.driver import Driver
 from app.models.ambulance_driver import AmbulanceDriver
 from app.models.hospital_account import HospitalAccount
+from app.models.incident_ambulance import IncidentAmbulance
+from app.models.incident_ambulance_cancellation import IncidentAmbulanceCancellation
 
 __all__ = [
     "HospitalAccount",
@@ -24,4 +26,6 @@ __all__ = [
     "IncidentBroadcast",
     "Driver",
     "AmbulanceDriver",
+    "IncidentAmbulance",
+    "IncidentAmbulanceCancellation",
 ]

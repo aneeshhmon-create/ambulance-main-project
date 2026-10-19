@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from app.models.hospital import Hospital
     from app.models.ambulance import Ambulance
     from app.models.incident_broadcast import IncidentBroadcast
+    from app.models.incident_ambulance import IncidentAmbulance
 
 
 class Incident(Base):
@@ -93,4 +94,7 @@ class Incident(Base):
     )
     broadcasts: Mapped[list["IncidentBroadcast"]] = relationship(
         "IncidentBroadcast", back_populates="incident"
+    )
+    requested_ambulances: Mapped[list["IncidentAmbulance"]] = relationship(
+        "IncidentAmbulance", back_populates="incident", cascade="all, delete-orphan"
     )

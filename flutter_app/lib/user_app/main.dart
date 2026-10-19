@@ -13,6 +13,7 @@ import 'package:ambulance_app/user_app/config/routes.dart';
 import 'package:ambulance_app/user_app/models/user.dart';
 import 'package:ambulance_app/user_app/screens/error_screen.dart';
 import 'package:ambulance_app/user_app/screens/home_screen.dart';
+import 'package:ambulance_app/user_app/screens/live_tracking_screen.dart';
 import 'package:ambulance_app/user_app/screens/login_screen.dart';
 import 'package:ambulance_app/user_app/screens/record_screen.dart';
 import 'package:ambulance_app/user_app/screens/result_screen.dart';
@@ -75,6 +76,13 @@ class AmbulanceUserApp extends StatelessWidget {
               ? args
               : (args is String ? int.tryParse(args) ?? 0 : 0);
           return TrackingScreen(incidentId: incidentId);
+        },
+        AppRoutes.liveTracking: (context) {
+          final args = ModalRoute.of(context)?.settings.arguments;
+          final incidentId = args is int
+              ? args
+              : (args is String ? int.tryParse(args) ?? 0 : 0);
+          return LiveTrackingScreen(incidentId: incidentId);
         },
       },
       onGenerateRoute: (settings) {

@@ -34,12 +34,14 @@ class AmbulanceModel {
   final String registrationNumber;
   final String? vehicleType;
   final bool isAvailable;
+  final bool isOnline;
 
   const AmbulanceModel({
     required this.id,
     required this.registrationNumber,
     this.vehicleType,
     required this.isAvailable,
+    this.isOnline = false,
   });
 
   factory AmbulanceModel.fromJson(Map<String, dynamic> json) {
@@ -48,6 +50,17 @@ class AmbulanceModel {
       registrationNumber: json['registration_number'] as String,
       vehicleType: json['vehicle_type'] as String?,
       isAvailable: json['is_available'] as bool,
+      isOnline: (json['is_online'] as bool?) ?? false,
+    );
+  }
+
+  AmbulanceModel copyWith({bool? isOnline}) {
+    return AmbulanceModel(
+      id: id,
+      registrationNumber: registrationNumber,
+      vehicleType: vehicleType,
+      isAvailable: isAvailable,
+      isOnline: isOnline ?? this.isOnline,
     );
   }
 }

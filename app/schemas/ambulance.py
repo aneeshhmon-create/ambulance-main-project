@@ -34,6 +34,13 @@ class AmbulanceLocationUpdate(BaseModel):
     location: LocationSchema
 
 
+class AmbulanceOnlineUpdate(BaseModel):
+    """Body accepted by PATCH /ambulances/{id}/online."""
+    is_online: bool
+    lat: Optional[float] = Field(None, ge=-90.0, le=90.0)
+    lng: Optional[float] = Field(None, ge=-180.0, le=180.0)
+
+
 # ── Response schemas ─────────────────────────────────────────────────────────
 
 class AmbulanceOut(BaseModel):
@@ -45,6 +52,8 @@ class AmbulanceOut(BaseModel):
     vehicle_type: Optional[str]
     location: Optional[LocationSchema]
     is_available: bool
+    is_online: bool = False
+    location_updated_at: Optional[datetime] = None
 
 
 class AmbulanceNearestOut(AmbulanceOut):
@@ -65,6 +74,27 @@ class DriverAmbulanceOut(BaseModel):
     registration_number: str
     vehicle_type: Optional[str]
     is_available: bool
+    is_online: bool = False
+    location_updated_at: Optional[datetime] = None
+
+
+class AmbulanceIncidentOut(BaseModel):
+    """
+    One incident candidate requested for an ambulance.
+    Returned by GET /ambulances/{ambulance_id}/incidents.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    severity: Optional[str] = None
+    emergency_type: Optional[str] = None
+    symptoms: list[str] = Field(default_factory=list)
+    victims: int = 1
+    department_needed: Optional[str] = None
+    transcript: Optional[str] = None
+    location: LocationSchema
+    distance_km: Optional[float] = None
+    created_at: datetime
 
 
 # ── Assignment (what the driver's app polls) ─────────────────────────────────
@@ -106,3 +136,31 @@ class AmbulanceAssignmentOut(BaseModel):
         None, description="Ambulance's last known position to the patient"
     )
     distance_patient_to_hospital_km: Optional[float] = None
+
+
+# ── Incident Detail for Driver Navigation ───────────────────────────────────
+
+class DriverIncidentHospitalOut(BaseModel):
+    """Destination hospital details for driver navigation."""
+    id: int
+    name: str
+    location: LocationSchema
+
+
+class DriverIncidentDetailOut(BaseModel):
+    """
+    Detailed incident state returned to an authenticated driver for navigation.
+    GET /ambulances/{ambulance_id}/incidents/{incident_id}.
+    """
+    id: int
+    status: str
+    severity: Optional[str] = None
+    emergency_type: Optional[str] = None
+    symptoms: list[str] = Field(default_factory=list)
+    victims: int = 1
+    department_needed: Optional[str] = None
+    transcript: Optional[str] = None
+    location: LocationSchema
+    created_at: datetime
+    assigned_hospital: Optional[DriverIncidentHospitalOut] = None
+

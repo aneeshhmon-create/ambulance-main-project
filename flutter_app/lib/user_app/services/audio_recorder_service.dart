@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:record/record.dart';
 
 /// Abstract API for microphone recording.
@@ -38,12 +39,20 @@ class RecordPackageRecorder implements AudioRecorderService {
 
   @override
   Future<void> start(String path) => _recorder.start(
-        const RecordConfig(
-          encoder: AudioEncoder.aacLc,
-          numChannels: 1,
-          sampleRate: 16000,
-          bitRate: 64000,
-        ),
+        // Browsers cannot encode AAC, so on web record 16 kHz mono WAV
+        // (the file path is ignored there; stop() returns a blob: URL).
+        kIsWeb
+            ? const RecordConfig(
+                encoder: AudioEncoder.wav,
+                numChannels: 1,
+                sampleRate: 16000,
+              )
+            : const RecordConfig(
+                encoder: AudioEncoder.aacLc,
+                numChannels: 1,
+                sampleRate: 16000,
+                bitRate: 64000,
+              ),
         path: path,
       );
 

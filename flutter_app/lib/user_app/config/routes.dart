@@ -7,4 +7,5 @@ class AppRoutes {
   static const String submit = '/submit';
   static const String result = '/result';
   static const String tracking = '/tracking';
+  static const String liveTracking = '/live-tracking';
 }

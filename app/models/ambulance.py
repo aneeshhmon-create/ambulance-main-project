@@ -8,9 +8,10 @@ Driver information is no longer stored on this table; it lives in the
 `drivers` table and is linked via the `ambulance_driver` junction.
 """
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Boolean, Text, Index
+from sqlalchemy import String, Boolean, Text, Index, DateTime, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from geoalchemy2 import Geography
 
@@ -19,6 +20,7 @@ from app.db.base import Base
 if TYPE_CHECKING:
     from app.models.incident import Incident
     from app.models.ambulance_driver import AmbulanceDriver
+    from app.models.incident_ambulance import IncidentAmbulance
 
 
 class Ambulance(Base):
@@ -42,6 +44,12 @@ class Ambulance(Base):
         nullable=True,
     )
     is_available: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_online: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False, index=True
+    )
+    location_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Relationships
     assigned_incidents: Mapped[list["Incident"]] = relationship(
@@ -52,6 +60,12 @@ class Ambulance(Base):
 
     driver_links: Mapped[list["AmbulanceDriver"]] = relationship(
         "AmbulanceDriver",
+        back_populates="ambulance",
+        cascade="all, delete-orphan",
+    )
+
+    requested_incidents: Mapped[list["IncidentAmbulance"]] = relationship(
+        "IncidentAmbulance",
         back_populates="ambulance",
         cascade="all, delete-orphan",
     )
