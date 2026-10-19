@@ -136,3 +136,31 @@ class AmbulanceAssignmentOut(BaseModel):
         None, description="Ambulance's last known position to the patient"
     )
     distance_patient_to_hospital_km: Optional[float] = None
+
+
+# ── Incident Detail for Driver Navigation ───────────────────────────────────
+
+class DriverIncidentHospitalOut(BaseModel):
+    """Destination hospital details for driver navigation."""
+    id: int
+    name: str
+    location: LocationSchema
+
+
+class DriverIncidentDetailOut(BaseModel):
+    """
+    Detailed incident state returned to an authenticated driver for navigation.
+    GET /ambulances/{ambulance_id}/incidents/{incident_id}.
+    """
+    id: int
+    status: str
+    severity: Optional[str] = None
+    emergency_type: Optional[str] = None
+    symptoms: list[str] = Field(default_factory=list)
+    victims: int = 1
+    department_needed: Optional[str] = None
+    transcript: Optional[str] = None
+    location: LocationSchema
+    created_at: datetime
+    assigned_hospital: Optional[DriverIncidentHospitalOut] = None
+

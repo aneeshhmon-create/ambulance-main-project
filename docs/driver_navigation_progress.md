@@ -25,13 +25,13 @@ Last updated: 2026-10-19 (session 1 starting)
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Pydantic schema for incident detail | Missing | In `app/schemas/ambulance.py` |
-| `GET /ambulances/{ambulance_id}/incidents/{incident_id}` | Missing | Requires `get_current_driver`, link check (403), assignment check (403/404) |
-| PostGIS geography to lat/lng conversion | Missing | Convert incident location & hospital location to {"lat", "lng"} |
-| `accept_as_hospital.py` dev script | Missing | Finds pending broadcast and accepts via real hospital accept endpoint |
-| Docker-compose mount for `accept_as_hospital.py` | Missing | Add volume mount in `docker-compose.yml` |
-| Backend tests in `app/tests/test_driver_navigation.py` | Missing | 401 unauthenticated, 403 unlinked driver, 403/404 wrong ambulance, hospital null -> assigned |
-| API docs in `docs/driver_navigation_api.md` | Missing | Document endpoint and JSON shapes |
+| Pydantic schema for incident detail | Done | `DriverIncidentDetailOut` and `DriverIncidentHospitalOut` in `app/schemas/ambulance.py` |
+| `GET /ambulances/{ambulance_id}/incidents/{incident_id}` | Done | In `app/routers/ambulances.py`, auth + link check (403) + assignment check (403/404) |
+| PostGIS geography to lat/lng conversion | Done | Helper functions `_incident_location` and `_hospital_location` |
+| `accept_as_hospital.py` dev script | Done | Standalone CLI at repo root, queries pending broadcast and calls `/accept` |
+| Docker-compose mount for `accept_as_hospital.py` | Done | Mounted in `docker-compose.yml` |
+| Backend tests in `app/tests/test_driver_navigation.py` | Done | 6 test cases covering 401, 403 unlinked, 404 missing, 403 wrong amb, hospital null -> assigned |
+| API docs in `docs/driver_navigation_api.md` | Done | Complete endpoint specification, JSON shapes, and dev script docs |
 
 ---
 

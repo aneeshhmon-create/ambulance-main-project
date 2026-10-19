@@ -19,6 +19,7 @@ Notes on geography
 """
 
 from datetime import datetime, timezone
+import json
 import logging
 from typing import Optional
 
@@ -31,6 +32,7 @@ from app.core.security import get_current_driver
 from app.db import get_db
 from app.models.ambulance import Ambulance
 from app.models.driver import Driver
+from app.models.hospital import Hospital
 from app.models.incident import Incident
 from app.models.incident_ambulance import IncidentAmbulance
 from app.schemas.ambulance import (
@@ -43,10 +45,12 @@ from app.schemas.ambulance import (
     AmbulanceIncidentOut,
     AssignmentHospitalOut,
     AssignmentPatientOut,
+    DriverIncidentDetailOut,
+    DriverIncidentHospitalOut,
 )
 from app.schemas.hospital import LocationSchema
 from app.schemas.incident import IncidentOut
-from app.routers.incidents import _build_incident_out
+from app.routers.incidents import _build_incident_out, _incident_location
 
 logger = logging.getLogger(__name__)
 
@@ -631,3 +635,105 @@ def get_ambulance_assignment(ambulance_id: int, db: Session = Depends(get_db)):
             round(r.patient_to_h_km, 2) if r.patient_to_h_km is not None else None
         ),
     )
+
+
+def _hospital_location(hospital_id: int, db: Session) -> LocationSchema:
+    """Resolve a hospital's geography column to plain lat/lng."""
+    try:
+        row = db.execute(
+            text(
+                "SELECT ST_Y(location::geometry) AS lat, "
+                "       ST_X(location::geometry) AS lng "
+                "FROM hospitals WHERE id = :id"
+            ),
+            {"id": hospital_id},
+        ).fetchone()
+        if row and row.lat is not None and row.lng is not None:
+            return LocationSchema(lat=row.lat, lng=row.lng)
+    except Exception:
+        pass
+    return LocationSchema(lat=0.0, lng=0.0)
+
+
+def _normalize_symptoms(symptoms) -> list[str]:
+    if not symptoms:
+        return []
+    if isinstance(symptoms, str):
+        try:
+            parsed = json.loads(symptoms)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        except Exception:
+            return [symptoms]
+    if isinstance(symptoms, list):
+        if len(symptoms) > 1 and symptoms[0] == "[" and symptoms[-1] == "]":
+            try:
+                parsed = json.loads("".join(symptoms))
+                if isinstance(parsed, list):
+                    return [str(x) for x in parsed]
+            except Exception:
+                pass
+        return [str(x) for x in symptoms]
+    return list(symptoms)
+
+
+# ── GET /ambulances/{id}/incidents/{incident_id} ─────────────────────────────
+
+@router.get(
+    "/{ambulance_id}/incidents/{incident_id}",
+    response_model=DriverIncidentDetailOut,
+    summary="Get incident details for driver navigation",
+)
+def get_driver_incident_detail(
+    ambulance_id: int,
+    incident_id: int,
+    driver: Driver = Depends(get_current_driver),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns incident details for driver navigation.
+    Requires that the authenticated driver is linked to the ambulance (403),
+    and that the incident is assigned to this ambulance (403 or 404).
+    """
+    _verify_driver_ambulance_access(ambulance_id, driver, db)
+
+    incident = db.get(Incident, incident_id)
+    if not incident:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Incident {incident_id} not found",
+        )
+
+    if incident.assigned_ambulance_id != ambulance_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Incident {incident_id} is not assigned to ambulance {ambulance_id}.",
+        )
+
+    inc_loc = _incident_location(incident.id, db)
+
+    assigned_hospital = None
+    if incident.assigned_hospital_id:
+        hosp = db.get(Hospital, incident.assigned_hospital_id)
+        if hosp:
+            h_loc = _hospital_location(hosp.id, db)
+            assigned_hospital = DriverIncidentHospitalOut(
+                id=hosp.id,
+                name=hosp.name,
+                location=h_loc,
+            )
+
+    return DriverIncidentDetailOut(
+        id=incident.id,
+        status=incident.status,
+        severity=incident.severity,
+        emergency_type=incident.emergency_type,
+        symptoms=_normalize_symptoms(incident.symptoms),
+        victims=incident.victims,
+        department_needed=incident.department_needed,
+        transcript=incident.transcript,
+        location=inc_loc,
+        created_at=incident.created_at,
+        assigned_hospital=assigned_hospital,
+    )
+
