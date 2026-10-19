@@ -1,12 +1,22 @@
 // lib/driver_app/screens/navigation_screen.dart
 //
-// Driver Navigation Screen:
-//   • Shows incident details and patient GPS marker
-//   • Polls for hospital assignment every 3-5 seconds
-//   • Draws route line (OSRM or straight line fallback) once hospital is assigned
-//   • Displays driver live position blue dot
-//   • Supports panning/zooming without reset, plus recenter/fit camera button
-//   • Cancel and system back return to Home (TODO for future cancellation lifecycle)
+// Driver Navigation Screen — dual-phase routing
+//
+//  Phase 1  (hospital NOT yet assigned)
+//    • Blue solid polyline  : driver current position → patient/incident location
+//    • Status chip          : "En route to patient • X km (Y min)"  or  spinner
+//    • Camera fit           : driver + patient
+//
+//  Phase 2  (hospital assigned)
+//    • Blue solid polyline  : driver → patient          (same as phase 1)
+//    • Teal solid polyline  : patient → hospital        (new leg)
+//    • Status chip          : "Hospital: <name> • X km (Y min)"
+//    • Camera fit           : driver + patient + hospital (auto-fits once)
+//
+//  Markers
+//    • Red  pin   : incident / patient location
+//    • Teal badge : hospital (phase 2 only)
+//    • Blue dot   : driver live GPS position
 
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -21,7 +31,6 @@ import 'package:ambulance_app/driver_app/services/driver_api_service.dart'
     hide LatLng;
 import 'package:ambulance_app/driver_app/services/routing_service.dart';
 import 'package:ambulance_app/driver_app/widgets/incident_top_strip.dart';
-import 'package:ambulance_app/driver_app/widgets/navigation_status_chip.dart';
 
 class NavigationScreen extends StatefulWidget {
   final int incidentId;
@@ -47,17 +56,26 @@ class _NavigationScreenState extends State<NavigationScreen>
   bool _pollingActive = false;
   Timer? _pollTimer;
 
-  // Driver blue dot GPS tracking
+  // ── Driver live position ──────────────────────────────────────────────────
   LatLng? _driverLocation;
   StreamSubscription<Position>? _positionSubscription;
 
-  // Routing state
-  RouteResult? _route;
-  bool _fetchingRoute = false;
+  // ── Phase 1: driver → patient route ──────────────────────────────────────
+  RouteResult? _toPatientRoute;
+  bool _fetchingToPatient = false;
+  // Re-fetch driver→patient route when driver moves more than ~50 m
+  LatLng? _lastRouteDriverPos;
+
+  // ── Phase 2: patient → hospital route ────────────────────────────────────
+  RouteResult? _toHospitalRoute;
+  bool _fetchingToHospital = false;
   int? _lastHospitalId;
 
-  // Camera tracking
-  bool _hasFittedHospital = false;
+  // ── Camera ────────────────────────────────────────────────────────────────
+  bool _hasFittedCamera = false; // fitted to driver+patient on first GPS fix
+  bool _hasFittedHospital = false; // fitted to all 3 on hospital assign
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -85,68 +103,102 @@ class _NavigationScreenState extends State<NavigationScreen>
     }
   }
 
-  // ── Driver GPS Tracking (Blue Dot) ─────────────────────────────────────────
+  // ── Driver GPS tracking ───────────────────────────────────────────────────
 
   Future<void> _initDriverLocationTracking() async {
     try {
       final perm = await Geolocator.checkPermission();
       if (perm == LocationPermission.denied ||
-          perm == LocationPermission.deniedForever) {
-        // Silently skip: map still functions without blue dot
-        return;
-      }
+          perm == LocationPermission.deniedForever) return;
       final enabled = await Geolocator.isLocationServiceEnabled();
       if (!enabled) return;
 
       final last = await Geolocator.getLastKnownPosition();
       if (last != null && mounted) {
-        setState(() {
-          _driverLocation = LatLng(last.latitude, last.longitude);
-        });
+        final ll = LatLng(last.latitude, last.longitude);
+        setState(() => _driverLocation = ll);
+        _maybeRefetchToPatientRoute(ll);
       }
 
       _positionSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 5,
+          distanceFilter: 15, // only fire when moved ≥ 15 m
         ),
       ).listen(
         (pos) {
           if (!mounted) return;
-          setState(() {
-            _driverLocation = LatLng(pos.latitude, pos.longitude);
-          });
+          final ll = LatLng(pos.latitude, pos.longitude);
+          setState(() => _driverLocation = ll);
+          _maybeRefetchToPatientRoute(ll);
+          // On first GPS fix, fit camera to driver + patient
+          if (!_hasFittedCamera && _incident != null) {
+            _hasFittedCamera = true;
+            _fitCamera();
+          }
         },
-        onError: (e) {
-          debugPrint('[NavigationScreen] Position stream error: $e');
-        },
+        onError: (e) => debugPrint('[NavScreen] GPS stream error: $e'),
       );
     } catch (e) {
-      debugPrint('[NavigationScreen] GPS init error: $e');
+      debugPrint('[NavScreen] GPS init error: $e');
     }
   }
 
-  // ── Initial Fetch & Polling ────────────────────────────────────────────────
+  /// Re-fetch the driver→patient route if driver moved > 50 m from last fetch.
+  void _maybeRefetchToPatientRoute(LatLng newPos) {
+    if (_incident == null) return;
+    if (_fetchingToPatient) return;
+
+    final last = _lastRouteDriverPos;
+    if (last != null) {
+      final movedM = const Distance().as(LengthUnit.Meter, last, newPos);
+      if (movedM < 50) return; // not enough movement to re-route
+    }
+
+    _fetchToPatientRoute(newPos);
+  }
+
+  Future<void> _fetchToPatientRoute(LatLng from) async {
+    if (_incident == null || _fetchingToPatient) return;
+    _fetchingToPatient = true;
+    _lastRouteDriverPos = from;
+
+    final result = await RoutingService.getRoute(
+      origin: from,
+      destination: _incident!.location,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _toPatientRoute = result;
+      _fetchingToPatient = false;
+    });
+  }
+
+  // ── Initial fetch & polling ───────────────────────────────────────────────
 
   Future<void> _fetchInitialIncident() async {
     setState(() {
       _loading = true;
       _nonBlockingError = null;
     });
-
     try {
       final detail = await DriverApiService.fetchIncidentDetail(
         ambulanceId: widget.ambulanceId,
         incidentId: widget.incidentId,
       );
-
       if (!mounted) return;
       setState(() {
         _incident = detail;
         _loading = false;
       });
 
-      // If hospital is already assigned, fetch route and fit camera
+      // Kick off driver→patient route if we already have a GPS fix
+      if (_driverLocation != null) {
+        _fetchToPatientRoute(_driverLocation!);
+      }
+
+      // If hospital already assigned at load time, fetch patient→hospital route
       if (detail.assignedHospital != null) {
         _handleHospitalAssigned(detail.assignedHospital!, autoFitCamera: true);
       }
@@ -176,13 +228,11 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   Future<void> _pollIncidentDetail() async {
     if (!_pollingActive || !mounted) return;
-
     try {
       final detail = await DriverApiService.fetchIncidentDetail(
         ambulanceId: widget.ambulanceId,
         incidentId: widget.incidentId,
       );
-
       if (!mounted) return;
 
       final previousHospitalId = _incident?.assignedHospital?.id;
@@ -193,7 +243,7 @@ class _NavigationScreenState extends State<NavigationScreen>
         _nonBlockingError = null;
       });
 
-      // If hospital assigned or changed, fetch route
+      // New hospital assigned? fetch patient→hospital route
       if (newHospital != null && newHospital.id != previousHospitalId) {
         _handleHospitalAssigned(
           newHospital,
@@ -207,12 +257,38 @@ class _NavigationScreenState extends State<NavigationScreen>
     }
   }
 
-  // ── Error Handling ─────────────────────────────────────────────────────────
+  // ── Hospital assigned ─────────────────────────────────────────────────────
+
+  Future<void> _handleHospitalAssigned(
+    DriverIncidentHospital hospital, {
+    required bool autoFitCamera,
+  }) async {
+    if (_fetchingToHospital && _lastHospitalId == hospital.id) return;
+    _lastHospitalId = hospital.id;
+    setState(() => _fetchingToHospital = true);
+
+    // Route: patient location → hospital location
+    final result = await RoutingService.getRoute(
+      origin: _incident!.location,
+      destination: hospital.location,
+    );
+    if (!mounted) return;
+    setState(() {
+      _toHospitalRoute = result;
+      _fetchingToHospital = false;
+    });
+
+    if (autoFitCamera && !_hasFittedHospital) {
+      _hasFittedHospital = true;
+      _fitCamera();
+    }
+  }
+
+  // ── Error Handling ────────────────────────────────────────────────────────
 
   void _handleFetchError(String error, {required bool isInitial}) {
     if (!mounted) return;
 
-    // 401 Session expired
     if (error.contains('Session expired') || error.contains('401')) {
       _stopPolling();
       AuthService.clearSession();
@@ -223,21 +299,16 @@ class _NavigationScreenState extends State<NavigationScreen>
       return;
     }
 
-    // 403 or 404
     if (error.contains('403') ||
         error.contains('404') ||
         error.contains('not assigned') ||
         error.contains('not authorized') ||
         error.contains('not found')) {
       _stopPolling();
-      _showFatalDialog(
-        title: 'Incident Unavailable',
-        message: error,
-      );
+      _showFatalDialog(title: 'Incident Unavailable', message: error);
       return;
     }
 
-    // Non-blocking error: keep existing map state, show banner
     setState(() {
       if (isInitial) _loading = false;
       _nonBlockingError = error;
@@ -255,7 +326,7 @@ class _NavigationScreenState extends State<NavigationScreen>
           FilledButton(
             onPressed: () {
               Navigator.of(ctx).pop();
-              Navigator.of(context).pop(); // Back to Home
+              Navigator.of(context).pop();
             },
             child: const Text('Return to Home'),
           ),
@@ -264,74 +335,33 @@ class _NavigationScreenState extends State<NavigationScreen>
     );
   }
 
-  // ── Hospital Assigned & Routing ────────────────────────────────────────────
+  // ── Camera ────────────────────────────────────────────────────────────────
 
-  Future<void> _handleHospitalAssigned(
-    DriverIncidentHospital hospital, {
-    required bool autoFitCamera,
-  }) async {
-    if (_fetchingRoute && _lastHospitalId == hospital.id) return;
-
-    _lastHospitalId = hospital.id;
-    setState(() => _fetchingRoute = true);
-
-    final routeResult = await RoutingService.getRoute(
-      origin: _incident!.location,
-      destination: hospital.location,
-    );
-
-    if (!mounted) return;
-
-    setState(() {
-      _route = routeResult;
-      _fetchingRoute = false;
-    });
-
-    if (autoFitCamera && !_hasFittedHospital) {
-      _hasFittedHospital = true;
-      _fitCameraToIncidentAndHospital();
-    }
-  }
-
-  // ── Camera Control ─────────────────────────────────────────────────────────
-
-  void _fitCameraToIncidentAndHospital() {
+  void _fitCamera() {
     if (_incident == null) return;
-
     final points = <LatLng>[_incident!.location];
+    if (_driverLocation != null) points.add(_driverLocation!);
     if (_incident!.assignedHospital != null) {
       points.add(_incident!.assignedHospital!.location);
     }
-    if (_driverLocation != null) {
-      points.add(_driverLocation!);
-    }
 
     if (points.length == 1) {
-      _mapController.move(_incident!.location, 15.0);
+      _mapController.move(points.first, 15.0);
     } else {
-      final bounds = LatLngBounds.fromPoints(points);
       _mapController.fitCamera(
         CameraFit.bounds(
-          bounds: bounds,
+          bounds: LatLngBounds.fromPoints(points),
           padding: const EdgeInsets.all(70),
         ),
       );
     }
   }
 
-  void _recenterOrFit() {
-    if (_incident == null) return;
-    if (_incident!.assignedHospital != null) {
-      _fitCameraToIncidentAndHospital();
-    } else {
-      _mapController.move(_incident!.location, 15.0);
-    }
-  }
+  void _recenterOrFit() => _fitCamera();
 
-  // ── Cancel & Back Navigation ───────────────────────────────────────────────
+  // ── Cancel ────────────────────────────────────────────────────────────────
 
   Future<void> _handleCancel() async {
-    // Ask for confirmation before releasing the incident
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -358,7 +388,6 @@ class _NavigationScreenState extends State<NavigationScreen>
 
     if (confirmed != true || !mounted) return;
 
-    // Show a loading indicator while the cancellation is in flight
     _stopPolling();
     setState(() => _loading = true);
 
@@ -368,11 +397,9 @@ class _NavigationScreenState extends State<NavigationScreen>
         incidentId: widget.incidentId,
       );
       if (!mounted) return;
-      // Pop back to Home; home screen will refresh incident list
       Navigator.of(context).pop();
     } catch (e) {
       if (!mounted) return;
-      // Restart polling so the driver isn't stuck
       _startPolling();
       setState(() => _loading = false);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -400,152 +427,323 @@ class _NavigationScreenState extends State<NavigationScreen>
       child: Scaffold(
         backgroundColor: cs.surfaceContainerLowest,
         body: _loading
-            ? Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    CircularProgressIndicator(color: cs.primary),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Loading incident #${widget.incidentId}...',
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: cs.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              )
+            ? _buildLoadingState(theme, cs)
             : _incident == null
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          'Failed to load incident details.',
-                          style: theme.textTheme.bodyLarge?.copyWith(
-                            color: cs.error,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        FilledButton(
-                          onPressed: _fetchInitialIncident,
-                          child: const Text('Retry'),
-                        ),
-                        const SizedBox(height: 8),
-                        TextButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          child: const Text('Back to Home'),
-                        ),
-                      ],
-                    ),
-                  )
-                : Column(
-                    children: [
-                      // Top Strip (Incident summary + minimal Cancel button)
-                      IncidentTopStrip(
-                        incident: _incident!,
-                        onCancel: _handleCancel,
-                      ),
-
-                      // Non-blocking network error banner (keeps map alive)
-                      if (_nonBlockingError != null)
-                        Container(
-                          width: double.infinity,
-                          color: cs.errorContainer,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 6),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.wifi_off_rounded,
-                                size: 16,
-                                color: cs.onErrorContainer,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  'Sync issue: $_nonBlockingError',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: cs.onErrorContainer,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              TextButton(
-                                style: TextButton.styleFrom(
-                                  visualDensity: VisualDensity.compact,
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8),
-                                ),
-                                onPressed: _pollIncidentDetail,
-                                child: Text(
-                                  'Retry',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: cs.onErrorContainer,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-
-                      // Map fills all remaining space
-                      Expanded(
-                        child: Stack(
-                          children: [
-                            _buildMap(),
-
-                            // Status Chip over map (top center)
-                            Positioned(
-                              top: 12,
-                              left: 16,
-                              right: 16,
-                              child: Align(
-                                alignment: Alignment.topCenter,
-                                child: NavigationStatusChip(
-                                  hospital: _incident!.assignedHospital,
-                                  route: _route,
-                                  isRouting: _fetchingRoute,
-                                ),
-                              ),
-                            ),
-
-                            // Recenter / Fit button (bottom right)
-                            Positioned(
-                              bottom: 28,
-                              right: 14,
-                              child: FloatingActionButton.small(
-                                heroTag: 'recenter_fit_fab',
-                                backgroundColor: cs.surface,
-                                foregroundColor: cs.primary,
-                                tooltip: 'Recenter / Fit route',
-                                elevation: 4,
-                                onPressed: _recenterOrFit,
-                                child: const Icon(
-                                  Icons.crop_free_rounded,
-                                  size: 22,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
+                ? _buildErrorState(cs)
+                : _buildMapState(theme, cs),
       ),
     );
   }
+
+  Widget _buildLoadingState(ThemeData theme, ColorScheme cs) => Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(color: cs.primary),
+            const SizedBox(height: 16),
+            Text(
+              'Loading incident #${widget.incidentId}...',
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: cs.onSurfaceVariant),
+            ),
+          ],
+        ),
+      );
+
+  Widget _buildErrorState(ColorScheme cs) => Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              'Failed to load incident details.',
+              style: TextStyle(color: cs.error),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: _fetchInitialIncident,
+              child: const Text('Retry'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Back to Home'),
+            ),
+          ],
+        ),
+      );
+
+  Widget _buildMapState(ThemeData theme, ColorScheme cs) {
+    final hasHospital = _incident!.assignedHospital != null;
+
+    return Column(
+      children: [
+        // ── Top strip ─────────────────────────────────────────────────────
+        IncidentTopStrip(
+          incident: _incident!,
+          onCancel: _handleCancel,
+        ),
+
+        // ── Network error banner ──────────────────────────────────────────
+        if (_nonBlockingError != null)
+          Container(
+            width: double.infinity,
+            color: cs.errorContainer,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            child: Row(
+              children: [
+                Icon(Icons.wifi_off_rounded,
+                    size: 16, color: cs.onErrorContainer),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Sync issue: $_nonBlockingError',
+                    style: TextStyle(fontSize: 12, color: cs.onErrorContainer),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                TextButton(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  onPressed: _pollIncidentDetail,
+                  child: Text(
+                    'Retry',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: cs.onErrorContainer,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+        // ── Map + overlays ────────────────────────────────────────────────
+        Expanded(
+          child: Stack(
+            children: [
+              _buildMap(),
+
+              // ── Status chip – top-center ────────────────────────────────
+              Positioned(
+                top: 12,
+                left: 16,
+                right: 16,
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: _buildStatusChip(theme, cs, hasHospital),
+                ),
+              ),
+
+              // ── Route legend – bottom-left ──────────────────────────────
+              Positioned(
+                bottom: 28,
+                left: 14,
+                child: _buildLegend(cs, hasHospital),
+              ),
+
+              // ── Fit/recenter FAB – bottom-right ─────────────────────────
+              Positioned(
+                bottom: 28,
+                right: 14,
+                child: FloatingActionButton.small(
+                  heroTag: 'recenter_fit_fab',
+                  backgroundColor: cs.surface,
+                  foregroundColor: cs.primary,
+                  tooltip: 'Fit all',
+                  elevation: 4,
+                  onPressed: _recenterOrFit,
+                  child: const Icon(Icons.crop_free_rounded, size: 22),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Status chip ───────────────────────────────────────────────────────────
+
+  Widget _buildStatusChip(
+      ThemeData theme, ColorScheme cs, bool hasHospital) {
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: cs.surface.withValues(alpha: 0.95),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: hasHospital
+                ? const Color(0xFF00796B).withValues(alpha: 0.5)
+                : cs.primary.withValues(alpha: 0.4),
+            width: 1.2,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.12),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!hasHospital) ...[
+              // Phase 1 ─ en route to patient
+              Icon(Icons.directions_car_rounded,
+                  size: 18, color: cs.primary),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  _phase1StatusText(),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: cs.onSurface,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (_fetchingToPatient) ...[
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    color: cs.primary,
+                  ),
+                ),
+              ],
+            ] else ...[
+              // Phase 2 ─ hospital assigned
+              const Icon(Icons.local_hospital_rounded,
+                  size: 18, color: Color(0xFF00796B)),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  _phase2StatusText(),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: cs.onSurface,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (_fetchingToHospital) ...[
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 1.5, color: cs.primary),
+                ),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _phase1StatusText() {
+    if (_toPatientRoute == null) return 'Navigating to patient…';
+    final km = _toPatientRoute!.distanceKm.toStringAsFixed(1);
+    final min = _toPatientRoute!.durationMinutes.ceil();
+    if (_toPatientRoute!.isFallback) {
+      return 'To patient • ~$km km (direct)';
+    }
+    return 'To patient • $km km ($min min)';
+  }
+
+  String _phase2StatusText() {
+    final hosp = _incident!.assignedHospital!;
+    if (_toHospitalRoute == null) return 'Hospital: ${hosp.name}';
+    final km = _toHospitalRoute!.distanceKm.toStringAsFixed(1);
+    final min = _toHospitalRoute!.durationMinutes.ceil();
+    if (_toHospitalRoute!.isFallback) {
+      return '${hosp.name} • ~$km km (direct)';
+    }
+    return '${hosp.name} • $km km ($min min)';
+  }
+
+  // ── Legend ────────────────────────────────────────────────────────────────
+
+  Widget _buildLegend(ColorScheme cs, bool hasHospital) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: cs.surface.withValues(alpha: 0.90),
+        borderRadius: BorderRadius.circular(10),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.10),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _legendRow(
+            color: const Color(0xFF1565C0),
+            label: 'You → Patient',
+          ),
+          if (hasHospital) ...[
+            const SizedBox(height: 4),
+            _legendRow(
+              color: const Color(0xFF00796B),
+              label: 'Patient → Hospital',
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _legendRow({required Color color, required String label}) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 24,
+          height: 3,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Map ───────────────────────────────────────────────────────────────────
 
   Widget _buildMap() {
     final inc = _incident!;
     final hosp = inc.assignedHospital;
 
+    // ── Markers ────────────────────────────────────────────────────────────
     final markers = <Marker>[
-      // Incident Marker (Red)
+      // Patient / incident (Red pin)
       Marker(
         point: inc.location,
         width: 44,
@@ -558,7 +756,7 @@ class _NavigationScreenState extends State<NavigationScreen>
       ),
     ];
 
-    // Hospital Marker (Distinct color + icon)
+    // Hospital (Teal badge)
     if (hosp != null) {
       markers.add(
         Marker(
@@ -572,23 +770,17 @@ class _NavigationScreenState extends State<NavigationScreen>
               border: Border.all(color: const Color(0xFF00796B), width: 2),
               boxShadow: const [
                 BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 4,
-                  offset: Offset(0, 2),
-                ),
+                    color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))
               ],
             ),
-            child: const Icon(
-              Icons.local_hospital_rounded,
-              color: Color(0xFF00796B),
-              size: 24,
-            ),
+            child: const Icon(Icons.local_hospital_rounded,
+                color: Color(0xFF00796B), size: 24),
           ),
         ),
       );
     }
 
-    // Driver Current Position Marker (Blue dot)
+    // Driver blue dot
     if (_driverLocation != null) {
       markers.add(
         Marker(
@@ -602,10 +794,7 @@ class _NavigationScreenState extends State<NavigationScreen>
               border: Border.all(color: Colors.white, width: 2.5),
               boxShadow: const [
                 BoxShadow(
-                  color: Colors.black38,
-                  blurRadius: 5,
-                  offset: Offset(0, 1),
-                ),
+                    color: Colors.black38, blurRadius: 5, offset: Offset(0, 1))
               ],
             ),
           ),
@@ -613,16 +802,35 @@ class _NavigationScreenState extends State<NavigationScreen>
       );
     }
 
+    // ── Polylines ──────────────────────────────────────────────────────────
     final polylines = <Polyline>[];
-    if (_route != null && _route!.points.isNotEmpty) {
+
+    // Leg 1: driver → patient  (blue)
+    if (_toPatientRoute != null && _toPatientRoute!.points.isNotEmpty) {
       polylines.add(
         Polyline(
-          points: _route!.points,
-          strokeWidth: _route!.isFallback ? 3.0 : 4.5,
-          color: _route!.isFallback
-              ? const Color(0xFFE65100).withValues(alpha: 0.8)
+          points: _toPatientRoute!.points,
+          strokeWidth: _toPatientRoute!.isFallback ? 3.0 : 4.5,
+          color: _toPatientRoute!.isFallback
+              ? const Color(0xFF1565C0).withValues(alpha: 0.5)
               : const Color(0xFF1565C0),
-          pattern: _route!.isFallback
+          pattern: _toPatientRoute!.isFallback
+              ? StrokePattern.dashed(segments: const [10, 8])
+              : const StrokePattern.solid(),
+        ),
+      );
+    }
+
+    // Leg 2: patient → hospital  (teal) — only in phase 2
+    if (_toHospitalRoute != null && _toHospitalRoute!.points.isNotEmpty) {
+      polylines.add(
+        Polyline(
+          points: _toHospitalRoute!.points,
+          strokeWidth: _toHospitalRoute!.isFallback ? 3.0 : 4.5,
+          color: _toHospitalRoute!.isFallback
+              ? const Color(0xFF00796B).withValues(alpha: 0.5)
+              : const Color(0xFF00796B),
+          pattern: _toHospitalRoute!.isFallback
               ? StrokePattern.dashed(segments: const [10, 8])
               : const StrokePattern.solid(),
         ),
