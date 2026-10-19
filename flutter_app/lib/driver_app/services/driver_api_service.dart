@@ -265,6 +265,28 @@ class DriverApiService {
     }
   }
 
+  /// POST /ambulances/{ambulanceId}/incidents/{incidentId}/reject
+  /// Turns down a requested incident; it will not be offered to this
+  /// ambulance again. Throws on 409 (no longer requested to this ambulance).
+  static Future<void> rejectIncident({
+    required int ambulanceId,
+    required int incidentId,
+  }) async {
+    final headers = await _authHeaders();
+    final resp = await http
+        .post(
+          Uri.parse(_base('/$ambulanceId/incidents/$incidentId/reject')),
+          headers: headers,
+        )
+        .timeout(const Duration(seconds: 10));
+    if (resp.statusCode == 409) {
+      throw _detail(resp) ?? 'This incident is no longer available.';
+    }
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw _detail(resp) ?? 'Server error ${resp.statusCode}';
+    }
+  }
+
   /// POST /ambulances/{ambulanceId}/incidents/{incidentId}/cancel
   /// Cancels an accepted incident: unassigns the ambulance, resets the
   /// incident to pending, and re-broadcasts it to other online ambulances.

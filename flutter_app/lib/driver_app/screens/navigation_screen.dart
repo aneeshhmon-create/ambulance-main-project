@@ -39,6 +39,7 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:ui' show lerpDouble;
 
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
@@ -125,12 +126,17 @@ class NavigationScreen extends StatefulWidget {
   final DriverIncidentDetail? initialDetail;
   final Future<void>? acceptFuture;
 
+  /// Last position Home already has for the driver, so the marker and the
+  /// route to the patient can appear immediately without waiting for a new fix.
+  final LatLng? initialDriverPosition;
+
   const NavigationScreen({
     super.key,
     required this.incidentId,
     required this.ambulanceId,
     this.initialDetail,
     this.acceptFuture,
+    this.initialDriverPosition,
   });
 
   @override
@@ -161,6 +167,11 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   late AnimationController _posAnimCtrl;
   StreamSubscription<Position>? _gpsStream;
+
+  /// Backup for the position stream (flaky on web / when the window is not
+  /// focused): polls a one-off fix whenever the stream has been silent.
+  Timer? _gpsFallbackTimer;
+  DateTime? _lastFixAt;
 
   // ── camera / follow mode ──────────────────────────────────────────────────
   bool _isFollowing = true;
@@ -199,7 +210,20 @@ class _NavigationScreenState extends State<NavigationScreen>
     }
 
     AuthService.saveActiveIncidentId(widget.incidentId);
+
+    final seedPos = widget.initialDriverPosition;
+    if (seedPos != null) {
+      _rawDriverPos = seedPos;
+      _animPos = seedPos;
+      _animFrom = seedPos;
+      _lastFixAt = DateTime.now();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _maybeReroute(seedPos);
+      });
+    }
     _initGps();
+    _gpsFallbackTimer =
+        Timer.periodic(const Duration(seconds: 5), (_) => _gpsFallbackTick());
 
     if (widget.acceptFuture != null) {
       _handleAcceptFuture();
@@ -213,17 +237,25 @@ class _NavigationScreenState extends State<NavigationScreen>
     WidgetsBinding.instance.removeObserver(this);
     _stopPolling();
     _gpsStream?.cancel();
+    _gpsFallbackTimer?.cancel();
     _posAnimCtrl.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Catch up immediately instead of waiting for the next timer tick.
+      _startPolling(immediate: true);
+      return;
+    }
+    // On web the window losing focus (e.g. clicking another window or the
+    // hospital dashboard) is reported as inactive/hidden. That is not a real
+    // pause, and stopping here made the map stop updating until refocused.
+    if (kIsWeb) return;
     if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
+        state == AppLifecycleState.hidden) {
       _stopPolling();
-    } else if (state == AppLifecycleState.resumed) {
-      _startPolling();
     }
   }
 
@@ -236,15 +268,30 @@ class _NavigationScreenState extends State<NavigationScreen>
           perm == LocationPermission.deniedForever) return;
       if (!await Geolocator.isLocationServiceEnabled()) return;
 
-      // Seed with last known so the marker appears immediately
-      final last = await Geolocator.getLastKnownPosition();
-      if (last != null && mounted) {
-        final ll = LatLng(last.latitude, last.longitude);
+      // Seed with an initial fix so the marker and route appear immediately.
+      // getLastKnownPosition is unsupported on web, so fall back to a
+      // one-off current position; a failure here must not stop the stream.
+      Position? seed;
+      try {
+        seed = kIsWeb ? null : await Geolocator.getLastKnownPosition();
+        seed ??= await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            timeLimit: Duration(seconds: 10),
+          ),
+        );
+      } catch (e) {
+        debugPrint('[NavScreen] initial GPS fix failed: $e');
+      }
+      if (seed != null && mounted) {
+        final ll = LatLng(seed.latitude, seed.longitude);
+        _lastFixAt = DateTime.now();
         _rawDriverPos = ll;
         _animPos = ll;
         _animFrom = ll;
         setState(() {});
         _maybeReroute(ll);
+        if (_isFollowing) _driveCamera(ll);
       }
 
       _gpsStream = Geolocator.getPositionStream(
@@ -260,8 +307,34 @@ class _NavigationScreenState extends State<NavigationScreen>
     }
   }
 
+  Future<void> _gpsFallbackTick() async {
+    if (!mounted) return;
+    final last = _lastFixAt;
+    if (last != null &&
+        DateTime.now().difference(last) < const Duration(seconds: 8)) {
+      return; // stream is alive
+    }
+    try {
+      final perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) {
+        return;
+      }
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 6),
+        ),
+      );
+      _onGpsPosition(pos);
+    } catch (e) {
+      debugPrint('[NavScreen] fallback fix failed: $e');
+    }
+  }
+
   void _onGpsPosition(Position pos) {
     if (!mounted) return;
+    _lastFixAt = DateTime.now();
     final newPos = LatLng(pos.latitude, pos.longitude);
 
     // ── bearing ──────────────────────────────────────────────────────────
@@ -856,7 +929,9 @@ class _NavigationScreenState extends State<NavigationScreen>
   }
 
   String _toPatientText() {
-    if (_toPatientRoute == null) return 'Routing to patient…';
+    if (_toPatientRoute == null) {
+      return _animPos == null ? 'Waiting for GPS…' : 'Routing to patient…';
+    }
     final km = _toPatientRoute!.distanceKm.toStringAsFixed(1);
     final min = _toPatientRoute!.durationMinutes.ceil();
     return _toPatientRoute!.isFallback

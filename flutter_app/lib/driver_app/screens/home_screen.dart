@@ -25,6 +25,8 @@
 //                                  GET  /ambulances/{id}/assignment
 //   • Accept         → POST /ambulances/{id}/incidents/{iid}/accept →
 //                      navigate to IncidentAcceptedScreen (race 409 shows snackbar)
+//   • Reject         → POST /ambulances/{id}/incidents/{iid}/reject (hides the incident)
+//   • Accept / Reject both ask for an inline Yes/No confirmation on the tile first
 //   • Details        → showModalBottomSheet with full incident fields
 
 import 'dart:async';
@@ -90,12 +92,29 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
 
   final Set<int> _acceptingIds = {};
 
+  /// Latest GPS fix Home has seen; handed to the navigation screen as a seed.
+  ll2.LatLng? _lastPosition;
+
+  /// Shown in the footer when location is not reaching the server (permission
+  /// off, or several failed pushes in a row). Null while all is well.
+  String? _locationWarning;
+  int _locationFailures = 0;
+  bool _requestingLocationPermission = false;
+  final Set<int> _rejectingIds = {};
+
+  /// Incident id → pending inline confirmation ('accept' or 'reject').
+  final Map<int, String> _confirming = {};
+
   Timer? _pollTimer;
   Timer? _locationTimer;
 
   // Guard: prevents duplicate navigation if two rapid checks both find an
   // active assignment (e.g. initState + first poll overlap on slow networks).
   bool _checkingAssignment = false;
+
+  /// True while a [NavigationScreen] is on the stack. Prevents the resume
+  /// check from pushing a duplicate screen (e.g. after a browser tab switch).
+  bool _navigationOpen = false;
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
@@ -137,12 +156,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
   /// If found, automatically navigates to [NavigationScreen] so the driver
   /// can continue navigating after a logout-and-login or app restart.
   Future<void> _resumeNavigationIfNeeded() async {
-    if (_checkingAssignment || !mounted) return;
+    if (_checkingAssignment || _navigationOpen || !mounted) return;
     _checkingAssignment = true;
     try {
       final assignment =
           await DriverApiService.fetchAssignment(widget.ambulance.id);
-      if (!mounted) return;
+      if (!mounted || _navigationOpen) return;
       if (assignment.assigned && assignment.incidentId != null) {
         // Show a brief banner so the driver understands what is happening.
         ScaffoldMessenger.of(context).showSnackBar(
@@ -151,14 +170,20 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
             duration: Duration(seconds: 2),
           ),
         );
-        await Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => NavigationScreen(
-              incidentId: assignment.incidentId!,
-              ambulanceId: widget.ambulance.id,
+        _navigationOpen = true;
+        try {
+          await Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => NavigationScreen(
+                incidentId: assignment.incidentId!,
+                ambulanceId: widget.ambulance.id,
+                initialDriverPosition: _lastPosition,
+              ),
             ),
-          ),
-        );
+          );
+        } finally {
+          _navigationOpen = false;
+        }
         // Returned from NavigationScreen — refresh incident list.
         if (mounted) _poll();
       }
@@ -196,6 +221,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
       if (mounted) {
         setState(() {
           _incidents = incidents;
+          _confirming.removeWhere((id, _) => !incidents.any((i) => i.id == id));
           _loadingIncidents = false;
         });
       }
@@ -235,6 +261,30 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
       const Duration(seconds: 7),
       (_) => _pushLocation(),
     );
+    // Don't wait 7 s for the first push (also re-asks for permission right
+    // away after an app restart while the ambulance is still marked online).
+    _pushLocation();
+  }
+
+  void _setLocationWarning(String? warning) {
+    if (!mounted || _locationWarning == warning) return;
+    setState(() => _locationWarning = warning);
+  }
+
+  /// Asks for location permission when it is not granted. The browser forgets
+  /// "allow this time" on reload, so an online driver must be re-asked here
+  /// instead of silently never sharing location.
+  Future<LocationPermission> _ensureLocationPermission() async {
+    var perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied && !_requestingLocationPermission) {
+      _requestingLocationPermission = true;
+      try {
+        perm = await Geolocator.requestPermission();
+      } finally {
+        _requestingLocationPermission = false;
+      }
+    }
+    return perm;
   }
 
   void _stopLocationSharing() {
@@ -245,10 +295,14 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
   Future<void> _pushLocation() async {
     if (!_isOnline || !mounted) return;
     try {
-      final perm = await Geolocator.checkPermission();
+      final perm = await _ensureLocationPermission();
       if (perm == LocationPermission.denied ||
           perm == LocationPermission.deniedForever) {
-        return; // silently skip if permission was revoked
+        _setLocationWarning(
+          'Location access is off — incidents cannot reach you. '
+          'Allow location for this app.',
+        );
+        return;
       }
       final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
@@ -256,14 +310,24 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
           timeLimit: Duration(seconds: 5),
         ),
       );
+      _lastPosition = ll2.LatLng(pos.latitude, pos.longitude);
       await DriverApiService.updateLocation(
         ambulanceId: widget.ambulance.id,
         lat: pos.latitude,
         lng: pos.longitude,
       );
+      _locationFailures = 0;
+      _setLocationWarning(null);
     } catch (e) {
-      // Non-fatal: GPS or network hiccup; will retry next tick
+      // Non-fatal: GPS or network hiccup; will retry next tick. Warn the
+      // driver after a few failures in a row so it is not silent.
       debugPrint('[HomeScreen] _pushLocation error: $e');
+      _locationFailures++;
+      if (_locationFailures >= 3) {
+        _setLocationWarning(
+          'Your location is not reaching the server — check GPS and network.',
+        );
+      }
     }
   }
 
@@ -317,6 +381,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
         );
         lat = pos.latitude;
         lng = pos.longitude;
+        _lastPosition = ll2.LatLng(pos.latitude, pos.longitude);
       } catch (e) {
         // Non-fatal: proceed without initial location if GPS times out
         debugPrint('[HomeScreen] GPS init error: $e');
@@ -354,6 +419,53 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
     }
   }
 
+  // ── Inline confirmation ───────────────────────────────────────────────────────
+
+  void _askConfirm(IncidentRequest incident, String action) {
+    if (_acceptingIds.contains(incident.id) ||
+        _rejectingIds.contains(incident.id)) {
+      return;
+    }
+    setState(() => _confirming[incident.id] = action);
+  }
+
+  void _dismissConfirm(IncidentRequest incident) {
+    setState(() => _confirming.remove(incident.id));
+  }
+
+  void _confirmAction(IncidentRequest incident) {
+    final action = _confirming.remove(incident.id);
+    setState(() {});
+    if (action == 'accept') {
+      _accept(incident);
+    } else if (action == 'reject') {
+      _reject(incident);
+    }
+  }
+
+  // ── Reject incident ───────────────────────────────────────────────────────────
+
+  Future<void> _reject(IncidentRequest incident) async {
+    if (_rejectingIds.contains(incident.id)) return;
+    setState(() => _rejectingIds.add(incident.id));
+    try {
+      await DriverApiService.rejectIncident(
+        ambulanceId: widget.ambulance.id,
+        incidentId: incident.id,
+      );
+      if (!mounted) return;
+      setState(() => _incidents.removeWhere((i) => i.id == incident.id));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Incident #${incident.id} rejected')),
+      );
+    } catch (e) {
+      _showError(e.toString());
+      if (mounted) _poll();
+    } finally {
+      if (mounted) setState(() => _rejectingIds.remove(incident.id));
+    }
+  }
+
   // ── Accept incident ───────────────────────────────────────────────────────────
 
   Future<void> _accept(IncidentRequest incident) async {
@@ -384,6 +496,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
 
     try {
       // Immediately open NavigationScreen!
+      _navigationOpen = true;
       await Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => NavigationScreen(
@@ -391,12 +504,14 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
             ambulanceId: widget.ambulance.id,
             initialDetail: initialDetail,
             acceptFuture: acceptFuture,
+            initialDriverPosition: _lastPosition,
           ),
         ),
       );
     } catch (e) {
       if (mounted) _showError(e.toString());
     } finally {
+      _navigationOpen = false;
       if (mounted) {
         setState(() => _acceptingIds.remove(incident.id));
         _poll();
@@ -418,7 +533,11 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
         accepting: _acceptingIds.contains(incident.id),
         onAccept: () {
           Navigator.of(ctx).pop();
-          _accept(incident);
+          _askConfirm(incident, 'accept');
+        },
+        onReject: () {
+          Navigator.of(ctx).pop();
+          _askConfirm(incident, 'reject');
         },
       ),
     );
@@ -484,7 +603,11 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
             _buildHeader(theme, cs),
             const Divider(height: 1, thickness: 1),
             Expanded(child: _buildIncidentList(theme, cs)),
-            HomeFooter(isOnline: _isOnline),
+            HomeFooter(
+              isOnline: _isOnline,
+              message: _isOnline ? _locationWarning : null,
+              isWarning: _isOnline && _locationWarning != null,
+            ),
           ],
         ),
       ),
@@ -702,7 +825,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
         itemBuilder: (context, i) => _IncidentTile(
           incident: _incidents[i],
           accepting: _acceptingIds.contains(_incidents[i].id),
-          onAccept: () => _accept(_incidents[i]),
+          rejecting: _rejectingIds.contains(_incidents[i].id),
+          confirming: _confirming[_incidents[i].id],
+          onAccept: () => _askConfirm(_incidents[i], 'accept'),
+          onReject: () => _askConfirm(_incidents[i], 'reject'),
+          onConfirm: () => _confirmAction(_incidents[i]),
+          onDismiss: () => _dismissConfirm(_incidents[i]),
           onDetails: () => _showDetails(_incidents[i]),
         ),
       ),
@@ -715,13 +843,25 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
 class _IncidentTile extends StatelessWidget {
   final IncidentRequest incident;
   final bool accepting;
+  final bool rejecting;
+
+  /// Pending inline confirmation: 'accept', 'reject' or null.
+  final String? confirming;
   final VoidCallback onAccept;
+  final VoidCallback onReject;
+  final VoidCallback onConfirm;
+  final VoidCallback onDismiss;
   final VoidCallback onDetails;
 
   const _IncidentTile({
     required this.incident,
     required this.accepting,
+    required this.rejecting,
+    required this.confirming,
     required this.onAccept,
+    required this.onReject,
+    required this.onConfirm,
+    required this.onDismiss,
     required this.onDetails,
   });
 
@@ -832,71 +972,157 @@ class _IncidentTile extends StatelessWidget {
           ),
           const SizedBox(width: 8),
 
-          // Right: Details + Accept buttons
-          Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.end,
+          // Right: Details + Reject/Accept, or an inline Yes/No confirmation
+          if (confirming != null && !accepting && !rejecting)
+            _buildConfirm(context)
+          else
+            _buildActions(context),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConfirm(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isReject = confirming == 'reject';
+    final color = isReject ? cs.error : cs.primary;
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Text(
+          isReject ? 'Reject this?' : 'Accept this?',
+          style: TextStyle(
+              fontSize: 12, fontWeight: FontWeight.w700, color: color),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              height: 30,
+              child: OutlinedButton(
+                onPressed: onDismiss,
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('No',
+                    style:
+                        TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+              ),
+            ),
+            const SizedBox(width: 6),
+            SizedBox(
+              height: 30,
+              child: FilledButton(
+                onPressed: onConfirm,
+                style: FilledButton.styleFrom(
+                  backgroundColor: color,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('Yes',
+                    style:
+                        TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildActions(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final busy = accepting || rejecting;
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        SizedBox(
+          height: 30,
+          child: OutlinedButton(
+            onPressed: onDetails,
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            child: Text(
+              'Details',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: cs.primary,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        if (busy)
+          const SizedBox(
+            width: 64,
+            height: 30,
+            child: Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          )
+        else
+          Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // Details button (outlined, smaller)
               SizedBox(
                 height: 30,
                 child: OutlinedButton(
-                  onPressed: onDetails,
+                  onPressed: onReject,
                   style: OutlinedButton.styleFrom(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                    foregroundColor: cs.error,
+                    side: BorderSide(color: cs.error.withValues(alpha: 0.6)),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
                     minimumSize: Size.zero,
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
+                        borderRadius: BorderRadius.circular(8)),
                   ),
-                  child: Text(
-                    'Details',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
+                  child: const Text('Reject',
+                      style: TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w700)),
                 ),
               ),
-              const SizedBox(height: 6),
-              // Accept button (filled)
-              accepting
-                  ? const SizedBox(
-                      width: 64,
-                      height: 30,
-                      child: Center(
-                          child: SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2))),
-                    )
-                  : SizedBox(
-                      height: 30,
-                      child: FilledButton(
-                        onPressed: onAccept,
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 0),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                        child: const Text(
-                          'Accept',
-                          style: TextStyle(
-                              fontSize: 12, fontWeight: FontWeight.w700),
-                        ),
-                      ),
-                    ),
+              const SizedBox(width: 6),
+              SizedBox(
+                height: 30,
+                child: FilledButton(
+                  onPressed: onAccept,
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('Accept',
+                      style: TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w700)),
+                ),
+              ),
             ],
           ),
-        ],
-      ),
+      ],
     );
   }
 }
@@ -907,11 +1133,13 @@ class _IncidentDetailSheet extends StatelessWidget {
   final IncidentRequest incident;
   final bool accepting;
   final VoidCallback onAccept;
+  final VoidCallback onReject;
 
   const _IncidentDetailSheet({
     required this.incident,
     required this.accepting,
     required this.onAccept,
+    required this.onReject,
   });
 
   @override
@@ -1130,6 +1358,21 @@ class _IncidentDetailSheet extends StatelessWidget {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton.icon(
+                      onPressed: accepting ? null : onReject,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Theme.of(context).colorScheme.error,
+                      ),
+                      icon: const Icon(Icons.close_rounded),
+                      label: const Text('Reject Incident',
+                          style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w600)),
                     ),
                   ),
                   const SizedBox(height: 24),

@@ -13,10 +13,14 @@ class HomeFooter extends StatelessWidget {
   /// Optional custom message. If null, a default message is shown.
   final String? message;
 
+  /// Styles the footer as a warning (e.g. location is not being shared).
+  final bool isWarning;
+
   const HomeFooter({
     super.key,
     required this.isOnline,
     this.message,
+    this.isWarning = false,
   });
 
   @override
@@ -29,10 +33,15 @@ class HomeFooter extends StatelessWidget {
             ? 'Sharing location — waiting for incoming requests…'
             : 'Go online to receive emergency requests');
 
-    final iconColor = isOnline ? const Color(0xFF388E3C) : cs.outline;
-    final icon = isOnline
-        ? Icons.radio_button_checked_rounded
-        : Icons.radio_button_unchecked_rounded;
+    const warnColor = Color(0xFFE65100);
+    final iconColor = isWarning
+        ? warnColor
+        : (isOnline ? const Color(0xFF388E3C) : cs.outline);
+    final icon = isWarning
+        ? Icons.location_off_rounded
+        : (isOnline
+            ? Icons.radio_button_checked_rounded
+            : Icons.radio_button_unchecked_rounded);
 
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
@@ -40,9 +49,11 @@ class HomeFooter extends StatelessWidget {
         color: cs.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: isOnline
-              ? const Color(0xFF388E3C).withValues(alpha: 0.35)
-              : cs.outlineVariant,
+          color: isWarning
+              ? warnColor.withValues(alpha: 0.6)
+              : (isOnline
+                  ? const Color(0xFF388E3C).withValues(alpha: 0.35)
+                  : cs.outlineVariant),
           width: 1.2,
         ),
       ),
