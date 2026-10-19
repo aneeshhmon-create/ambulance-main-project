@@ -1,0 +1,14 @@
+.git
+.github
+flutter_app
+hospital-dashboard
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+venv
+.venv
+.vscode
+.idea
+*.log
