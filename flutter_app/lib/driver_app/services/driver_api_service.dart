@@ -13,6 +13,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:ambulance_app/driver_app/config/api_config.dart';
+import 'package:ambulance_app/driver_app/models/incident_detail.dart';
 
 // ── DTOs ────────────────────────────────────────────────────────────────────
 
@@ -276,5 +277,36 @@ class DriverApiService {
     }
     return ActiveAssignment.fromJson(
         jsonDecode(resp.body) as Map<String, dynamic>);
+  }
+
+  /// GET /ambulances/{ambulanceId}/incidents/{incidentId}
+  /// Returns detailed incident information for driver navigation.
+  static Future<DriverIncidentDetail> fetchIncidentDetail({
+    required int ambulanceId,
+    required int incidentId,
+  }) async {
+    final headers = await _authHeaders();
+    final resp = await http
+        .get(
+          Uri.parse(_base('/$ambulanceId/incidents/$incidentId')),
+          headers: headers,
+        )
+        .timeout(const Duration(seconds: 8));
+
+    if (resp.statusCode == 401) {
+      throw 'Session expired. Please sign in again.';
+    }
+    if (resp.statusCode == 403) {
+      throw _detail(resp) ?? 'Access denied for this incident.';
+    }
+    if (resp.statusCode == 404) {
+      throw _detail(resp) ?? 'Incident not found.';
+    }
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw _detail(resp) ?? 'Server error ${resp.statusCode}';
+    }
+
+    final data = jsonDecode(resp.body) as Map<String, dynamic>;
+    return DriverIncidentDetail.fromJson(data);
   }
 }

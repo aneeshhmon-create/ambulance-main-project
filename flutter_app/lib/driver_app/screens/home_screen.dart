@@ -36,7 +36,7 @@ import 'package:ambulance_app/driver_app/models/driver.dart';
 import 'package:ambulance_app/driver_app/services/auth_service.dart';
 import 'package:ambulance_app/driver_app/services/driver_api_service.dart';
 import 'package:ambulance_app/driver_app/screens/auth_page.dart';
-import 'package:ambulance_app/driver_app/screens/incident_accepted_screen.dart';
+import 'package:ambulance_app/driver_app/screens/navigation_screen.dart';
 import 'package:ambulance_app/driver_app/widgets/home_footer.dart';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -315,10 +315,13 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
       // Refresh incident list in background
       _poll();
       if (!mounted) return;
-      // Navigate to placeholder "Incident accepted" screen
+      // Navigate to the Navigation page
       await Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => IncidentAcceptedScreen(incidentId: incident.id),
+          builder: (_) => NavigationScreen(
+            incidentId: incident.id,
+            ambulanceId: widget.ambulance.id,
+          ),
         ),
       );
       // On return, refresh again in case the user backed out

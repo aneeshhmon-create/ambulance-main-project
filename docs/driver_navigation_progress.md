@@ -39,20 +39,20 @@ Last updated: 2026-10-19 (session 1 starting)
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Add `flutter_map` and `latlong2` to `pubspec.yaml` | Missing | Run `flutter pub get` |
+| Add `flutter_map` and `latlong2` to `pubspec.yaml` | Done | Added `flutter_map: ^8.3.2` and `latlong2: ^0.10.1` |
 | Verify Android internet permission | Done | Present in `flutter_app/android/app/src/driver/AndroidManifest.xml` |
-| Incident detail model & API service method | Missing | Fetch incident detail with JWT auth |
-| OSRM routing service | Missing | Fetch route from OSRM demo server, distance & ETA, fallback straight line |
-| Compact top strip widget | Missing | Incident number, severity badge, type, victims, dept; expands on tap for symptoms & transcript; small cancel button |
-| Status chip widget | Missing | "Looking for a hospital..." / "Hospital assigned: <name>" + distance & ETA |
-| Navigation screen (`navigation_screen.dart`) | Missing | Map filling remaining space, OSM raster tiles + userAgent + attribution |
-| Map markers | Missing | Red incident marker, hospital marker (when assigned), blue dot for driver GPS |
-| Map camera control | Missing | Initial center on incident; fit bounds when hospital assigned; recenter/fit button; pan/zoom preserved across polls |
-| Polling lifecycle | Missing | Poll every 3-5s, stop on dispose / app paused, resume on resume |
-| Location sharing continuity | Missing | Kept alive from HomeScreen underneath; reuse Geolocator for driver blue dot |
-| Replace placeholder in `home_screen.dart` | Missing | Navigate to `NavigationScreen(incidentId: incident.id, ambulanceId: widget.ambulance.id)` |
-| Cancel & system back | Missing | Pop back to Home with TODO comments; TODO hook for arrival/completed page |
-| Error handling | Missing | Non-blocking retry banner, 401 redirect to auth, 403/404 back home, permission denied fallback, OSRM fallback |
+| Incident detail model & API service method | Done | `DriverIncidentDetail` in `incident_detail.dart`, `fetchIncidentDetail` in `driver_api_service.dart` |
+| OSRM routing service | Done | `RoutingService` in `routing_service.dart` with OSRM demo server and straight line fallback |
+| Compact top strip widget | Done | `IncidentTopStrip` in `incident_top_strip.dart` with severity badge, expand/collapse, and small cancel button |
+| Status chip widget | Done | `NavigationStatusChip` in `navigation_status_chip.dart` showing searching or hospital name + km + ETA |
+| Navigation screen (`navigation_screen.dart`) | Done | Full map page with OSM raster tiles, user agent, OSM attribution, markers, and polyline |
+| Map markers | Done | Red incident marker, teal hospital marker (when assigned), blue pulsing dot for driver GPS |
+| Map camera control | Done | Initial center on incident; fit bounds when hospital assigned; recenter/fit button; pan/zoom preserved across polls |
+| Polling lifecycle | Done | Polls `GET /ambulances/{id}/incidents/{id}` every 4s, pauses on app pause, resumes on resume |
+| Location sharing continuity | Done | Kept running in `HomeScreen` underneath; independent position stream in `NavigationScreen` for blue dot |
+| Replace placeholder in `home_screen.dart` | Done | Accept flow pushes `NavigationScreen(incidentId, ambulanceId)` |
+| Cancel & system back | Done | PopScope + Cancel button pop back to Home with TODO comments for cancellation and arrival |
+| Error handling | Done | Non-blocking retry banner, 401 redirect to auth, 403/404 back home, permission denied fallback, OSRM fallback |
 
 ---
 
@@ -60,7 +60,7 @@ Last updated: 2026-10-19 (session 1 starting)
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Docker container tests pass | Missing | Run pytest in `ambulance_app` container |
-| `flutter analyze` clean | Missing | 0 errors |
-| Manual testing instructions | Missing | Demo commands and checklist |
-| Known limitations & notes | Missing | Cancellation lifecycle, resumption after restart, etc. |
+| Docker container tests pass | Done | 47/47 pytest tests pass inside `ambulance_app` container |
+| `flutter analyze` clean | Done | 0 issues found across all user and driver app code |
+| Manual testing instructions | Done | Documented in `docs/driver_navigation_progress.md` and report |
+| Known limitations & notes | Done | Cancellation lifecycle, resumption after restart, etc. |
