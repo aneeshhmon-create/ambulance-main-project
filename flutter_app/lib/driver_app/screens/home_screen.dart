@@ -91,6 +91,10 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
   Timer? _pollTimer;
   Timer? _locationTimer;
 
+  // Guard: prevents duplicate navigation if two rapid checks both find an
+  // active assignment (e.g. initState + first poll overlap on slow networks).
+  bool _checkingAssignment = false;
+
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
   @override
@@ -102,6 +106,11 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
       _startPolling();
       _startLocationSharing();
     }
+    // After the first frame (Navigator is ready), check if there is already
+    // an active incident this driver accepted before logging out.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _resumeNavigationIfNeeded();
+    });
   }
 
   @override
@@ -116,6 +125,47 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _isOnline) {
       _poll(); // immediate refresh on foreground
+      _resumeNavigationIfNeeded(); // re-check active assignment on foreground
+    }
+  }
+
+  // ── Resume active navigation ──────────────────────────────────────────────
+
+  /// Checks the backend for an active assigned incident.
+  /// If found, automatically navigates to [NavigationScreen] so the driver
+  /// can continue navigating after a logout-and-login or app restart.
+  Future<void> _resumeNavigationIfNeeded() async {
+    if (_checkingAssignment || !mounted) return;
+    _checkingAssignment = true;
+    try {
+      final assignment =
+          await DriverApiService.fetchAssignment(widget.ambulance.id);
+      if (!mounted) return;
+      if (assignment.assigned && assignment.incidentId != null) {
+        // Show a brief banner so the driver understands what is happening.
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Resuming your active mission…'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => NavigationScreen(
+              incidentId: assignment.incidentId!,
+              ambulanceId: widget.ambulance.id,
+            ),
+          ),
+        );
+        // Returned from NavigationScreen — refresh incident list.
+        if (mounted) _poll();
+      }
+    } catch (e) {
+      // Non-fatal: if the check fails (network hiccup, 401 etc.) we simply
+      // leave the driver on the home screen; the normal polling will proceed.
+      debugPrint('[HomeScreen] _resumeNavigationIfNeeded error: $e');
+    } finally {
+      _checkingAssignment = false;
     }
   }
 
