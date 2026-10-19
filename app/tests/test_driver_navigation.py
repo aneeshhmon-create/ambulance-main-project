@@ -9,6 +9,7 @@ Backend unit tests for the driver navigation feature:
   - 403 when incident is assigned to another ambulance
   - 200 with assigned_hospital=None before hospital acceptance
   - 200 with assigned_hospital populated after hospital acceptance
+  - POST /ambulances/{id}/incidents/{id}/cancel resets incident and hospital broadcasts
 """
 
 from datetime import datetime, timezone
@@ -37,6 +38,9 @@ from app.models.ambulance import Ambulance
 from app.models.ambulance_driver import AmbulanceDriver
 from app.models.incident import Incident
 from app.models.hospital import Hospital
+from app.models.incident_broadcast import IncidentBroadcast
+from app.models.incident_ambulance import IncidentAmbulance
+from app.models.incident_ambulance_cancellation import IncidentAmbulanceCancellation
 from app.core.security import create_driver_token
 
 # ── SQLite in-memory setup with Spatial mock functions ────────────────────────
@@ -91,6 +95,9 @@ _TEST_TABLES = [
     AmbulanceDriver.__table__,
     Incident.__table__,
     Hospital.__table__,
+    IncidentBroadcast.__table__,
+    IncidentAmbulance.__table__,
+    IncidentAmbulanceCancellation.__table__,
 ]
 
 Incident.__table__.columns["symptoms"].server_default = None
@@ -318,3 +325,285 @@ def test_navigation_assigned_hospital_populated_after_accept(
     assert data["assigned_hospital"]["name"] == hospital.name
     assert "lat" in data["assigned_hospital"]["location"]
     assert "lng" in data["assigned_hospital"]["location"]
+
+
+# ── Cancel ────────────────────────────────────────────────────────────────────
+
+def _assigned_incident_with_broadcasts(db, a1, hospital):
+    """Incident accepted by a1 and a hospital: one accepted + one expired broadcast."""
+    other = Hospital(
+        name="Second Hospital",
+        location="POINT(76.2900 9.9500)",
+        departments=["Cardiology"],
+        is_active=True,
+    )
+    db.add(other)
+    db.flush()
+    inc = Incident(
+        status="ambulance_assigned",
+        emergency_type="Cardiac Arrest",
+        severity="critical",
+        symptoms=["chest pain"],
+        victims=1,
+        location="POINT(76.2673 9.9312)",
+        assigned_ambulance_id=a1.id,
+        assigned_hospital_id=hospital.id,
+    )
+    db.add(inc)
+    db.flush()
+    db.add(IncidentBroadcast(
+        incident_id=inc.id, target_type="hospital",
+        target_id=hospital.id, status="accepted"))
+    db.add(IncidentBroadcast(
+        incident_id=inc.id, target_type="hospital",
+        target_id=other.id, status="expired"))
+    db.commit()
+    db.refresh(inc)
+    return inc
+
+
+def test_cancel_keeps_accepted_hospital_and_leaves_broadcasts(
+    client, db, driver_and_ambulance, hospital
+):
+    """Mid-journey cancel frees the ambulance but keeps the hospital assignment."""
+    _, a1, token1 = driver_and_ambulance
+    inc = _assigned_incident_with_broadcasts(db, a1, hospital)
+    a1.is_available = False
+    db.commit()
+
+    headers = {"Authorization": f"Bearer {token1}"}
+    resp = client.post(
+        f"/ambulances/{a1.id}/incidents/{inc.id}/cancel", headers=headers
+    )
+    assert resp.status_code == 200, resp.text
+
+    db.expire_all()
+    inc = db.get(Incident, inc.id)
+    assert inc.status == "hospital_assigned"
+    assert inc.assigned_ambulance_id is None
+    assert inc.assigned_hospital_id == hospital.id
+    assert db.get(Ambulance, a1.id).is_available is True
+
+    # Hospitals are NOT re-broadcast: statuses are exactly as they were.
+    statuses = sorted(
+        b.status for b in
+        db.query(IncidentBroadcast).filter_by(incident_id=inc.id).all()
+    )
+    assert statuses == ["accepted", "expired"]
+
+
+def test_cancel_without_hospital_returns_to_pending(
+    client, db, driver_and_ambulance, hospital
+):
+    """No hospital yet: cancel puts the incident back to pending."""
+    _, a1, token1 = driver_and_ambulance
+    inc = _assigned_incident_with_broadcasts(db, a1, hospital)
+    inc.assigned_hospital_id = None
+    db.query(IncidentBroadcast).filter_by(incident_id=inc.id).update(
+        {"status": "pending"})
+    db.commit()
+
+    headers = {"Authorization": f"Bearer {token1}"}
+    resp = client.post(
+        f"/ambulances/{a1.id}/incidents/{inc.id}/cancel", headers=headers
+    )
+    assert resp.status_code == 200, resp.text
+
+    db.expire_all()
+    inc = db.get(Incident, inc.id)
+    assert inc.status == "pending"
+    assert inc.assigned_ambulance_id is None
+    assert inc.assigned_hospital_id is None
+    statuses = [
+        b.status for b in
+        db.query(IncidentBroadcast).filter_by(incident_id=inc.id).all()
+    ]
+    assert statuses == ["pending", "pending"]
+
+
+def test_replacement_ambulance_can_accept_after_cancel_and_sees_hospital(
+    client, db, driver_and_ambulance, second_driver_and_ambulance, hospital
+):
+    """After a mid-journey cancel another driver accepts and gets the hospital."""
+    _, a1, token1 = driver_and_ambulance
+    _, a2, token2 = second_driver_and_ambulance
+    inc = _assigned_incident_with_broadcasts(db, a1, hospital)
+
+    assert client.post(
+        f"/ambulances/{a1.id}/incidents/{inc.id}/cancel",
+        headers={"Authorization": f"Bearer {token1}"},
+    ).status_code == 200
+
+    headers2 = {"Authorization": f"Bearer {token2}"}
+    assert client.post(
+        f"/ambulances/{a2.id}/incidents/{inc.id}/accept", headers=headers2
+    ).status_code == 200
+
+    detail = client.get(
+        f"/ambulances/{a2.id}/incidents/{inc.id}", headers=headers2
+    ).json()
+    assert detail["status"] == "ambulance_assigned"
+    assert detail["assigned_hospital"]["id"] == hospital.id
+
+
+def test_cancel_keeps_declined_broadcasts_declined(
+    client, db, driver_and_ambulance, hospital
+):
+    """Broadcast rows are left untouched by cancel (declined stays declined)."""
+    _, a1, token1 = driver_and_ambulance
+    inc = _assigned_incident_with_broadcasts(db, a1, hospital)
+    declined = db.query(IncidentBroadcast).filter_by(
+        incident_id=inc.id, status="expired").one()
+    declined.status = "declined"
+    db.commit()
+
+    headers = {"Authorization": f"Bearer {token1}"}
+    resp = client.post(
+        f"/ambulances/{a1.id}/incidents/{inc.id}/cancel", headers=headers
+    )
+    assert resp.status_code == 200, resp.text
+
+    db.expire_all()
+    by_status = sorted(
+        b.status for b in
+        db.query(IncidentBroadcast).filter_by(incident_id=inc.id).all()
+    )
+    assert by_status == ["accepted", "declined"]
+
+
+def test_cancel_forbidden_for_other_ambulance(
+    client, db, driver_and_ambulance, second_driver_and_ambulance, hospital
+):
+    """An ambulance that does not hold the incident cannot cancel it (403)."""
+    _, a1, _ = driver_and_ambulance
+    _, a2, token2 = second_driver_and_ambulance
+    inc = _assigned_incident_with_broadcasts(db, a1, hospital)
+
+    headers = {"Authorization": f"Bearer {token2}"}
+    resp = client.post(
+        f"/ambulances/{a2.id}/incidents/{inc.id}/cancel", headers=headers
+    )
+    assert resp.status_code == 403
+
+
+def test_cancel_offers_incident_to_others_but_not_back_to_canceller(
+    client, db, driver_and_ambulance, second_driver_and_ambulance, hospital
+):
+    """After cancel, the other ambulance is a candidate; the canceller is not."""
+    _, a1, token1 = driver_and_ambulance
+    _, a2, _ = second_driver_and_ambulance
+    inc = _assigned_incident_with_broadcasts(db, a1, hospital)
+
+    headers = {"Authorization": f"Bearer {token1}"}
+    resp = client.post(
+        f"/ambulances/{a1.id}/incidents/{inc.id}/cancel", headers=headers
+    )
+    assert resp.status_code == 200, resp.text
+
+    db.expire_all()
+    candidates = {
+        r.ambulance_id for r in
+        db.query(IncidentAmbulance).filter_by(incident_id=inc.id).all()
+    }
+    assert candidates == {a2.id}
+    assert db.query(IncidentAmbulanceCancellation).filter_by(
+        incident_id=inc.id, ambulance_id=a1.id).count() == 1
+
+
+def test_going_online_does_not_reoffer_cancelled_incident(
+    client, db, driver_and_ambulance, hospital
+):
+    """The online backfill skips incidents this ambulance already cancelled."""
+    _, a1, token1 = driver_and_ambulance
+    inc = _assigned_incident_with_broadcasts(db, a1, hospital)
+    headers = {"Authorization": f"Bearer {token1}"}
+
+    assert client.post(
+        f"/ambulances/{a1.id}/incidents/{inc.id}/cancel", headers=headers
+    ).status_code == 200
+    assert client.patch(
+        f"/ambulances/{a1.id}/online", headers=headers, json={"is_online": False}
+    ).status_code == 200
+    assert client.patch(
+        f"/ambulances/{a1.id}/online", headers=headers, json={"is_online": True}
+    ).status_code == 200
+
+    db.expire_all()
+    assert db.query(IncidentAmbulance).filter_by(
+        incident_id=inc.id, ambulance_id=a1.id).count() == 0
+
+
+# ── Reject ────────────────────────────────────────────────────────────────────
+
+def _requested_incident(db, *ambulances):
+    inc = Incident(
+        status="pending",
+        emergency_type="Cardiac Arrest",
+        severity="critical",
+        symptoms=["chest pain"],
+        victims=1,
+        location="POINT(76.2673 9.9312)",
+    )
+    db.add(inc)
+    db.flush()
+    for a in ambulances:
+        db.add(IncidentAmbulance(incident_id=inc.id, ambulance_id=a.id))
+    db.commit()
+    db.refresh(inc)
+    return inc
+
+
+def test_reject_removes_request_only_for_this_ambulance(
+    client, db, driver_and_ambulance, second_driver_and_ambulance
+):
+    """Reject hides the incident for the rejecter and remembers it; others keep it."""
+    _, a1, token1 = driver_and_ambulance
+    _, a2, _ = second_driver_and_ambulance
+    inc = _requested_incident(db, a1, a2)
+
+    headers = {"Authorization": f"Bearer {token1}"}
+    resp = client.post(
+        f"/ambulances/{a1.id}/incidents/{inc.id}/reject", headers=headers
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "rejected"
+
+    db.expire_all()
+    remaining = {
+        r.ambulance_id for r in
+        db.query(IncidentAmbulance).filter_by(incident_id=inc.id).all()
+    }
+    assert remaining == {a2.id}
+    assert db.query(IncidentAmbulanceCancellation).filter_by(
+        incident_id=inc.id, ambulance_id=a1.id).count() == 1
+    assert db.get(Incident, inc.id).status == "pending"
+
+
+def test_reject_twice_conflicts(client, db, driver_and_ambulance):
+    """A second reject (request already gone) returns 409."""
+    _, a1, token1 = driver_and_ambulance
+    inc = _requested_incident(db, a1)
+    headers = {"Authorization": f"Bearer {token1}"}
+    url = f"/ambulances/{a1.id}/incidents/{inc.id}/reject"
+
+    assert client.post(url, headers=headers).status_code == 200
+    assert client.post(url, headers=headers).status_code == 409
+
+
+def test_reject_auth_and_not_found(
+    client, db, driver_and_ambulance, second_driver_and_ambulance
+):
+    """401 without token, 403 for an unlinked driver, 404 for a missing incident."""
+    _, a1, token1 = driver_and_ambulance
+    _, _, token2 = second_driver_and_ambulance
+    inc = _requested_incident(db, a1)
+
+    assert client.post(f"/ambulances/{a1.id}/incidents/{inc.id}/reject").status_code == 401
+    assert client.post(
+        f"/ambulances/{a1.id}/incidents/{inc.id}/reject",
+        headers={"Authorization": f"Bearer {token2}"},
+    ).status_code == 403
+    assert client.post(
+        f"/ambulances/{a1.id}/incidents/99999/reject",
+        headers={"Authorization": f"Bearer {token1}"},
+    ).status_code == 404

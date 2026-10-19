@@ -35,6 +35,7 @@ from app.models.driver import Driver
 from app.models.hospital import Hospital
 from app.models.incident import Incident
 from app.models.incident_ambulance import IncidentAmbulance
+from app.models.incident_ambulance_cancellation import IncidentAmbulanceCancellation
 from app.schemas.ambulance import (
     AmbulanceCreate,
     AmbulanceOut,
@@ -297,6 +298,10 @@ def update_ambulance_online(
                         "        :radius_m"
                         "      ) "
                         "  AND NOT EXISTS ( "
+                        "        SELECT 1 FROM inci_ambu_cancelled c "
+                        "        WHERE c.incident_id = i.id AND c.ambulance_id = :aid "
+                        "  ) "
+                        "  AND NOT EXISTS ( "
                         "        SELECT 1 FROM inci_ambu ia "
                         "        WHERE ia.incident_id = i.id AND ia.ambulance_id = :aid "
                         "  )"
@@ -320,6 +325,10 @@ def update_ambulance_online(
                             "WHERE i.assigned_ambulance_id IS NULL "
                             "  AND i.status != 'completed' "
                             "  AND NOT EXISTS ( "
+                            "        SELECT 1 FROM inci_ambu_cancelled c "
+                            "        WHERE c.incident_id = i.id AND c.ambulance_id = :aid "
+                            "  ) "
+                            "  AND NOT EXISTS ( "
                             "        SELECT 1 FROM inci_ambu ia "
                             "        WHERE ia.incident_id = i.id AND ia.ambulance_id = :aid "
                             "  )"
@@ -342,6 +351,10 @@ def update_ambulance_online(
                         "  AND i.created_at >= NOW() - (:window || ' minutes')::interval "
                         "  AND ST_DWithin(i.location, a.location, :radius_m) "
                         "  AND NOT EXISTS ( "
+                        "        SELECT 1 FROM inci_ambu_cancelled c "
+                        "        WHERE c.incident_id = i.id AND c.ambulance_id = :aid "
+                        "  ) "
+                        "  AND NOT EXISTS ( "
                         "        SELECT 1 FROM inci_ambu ia "
                         "        WHERE ia.incident_id = i.id AND ia.ambulance_id = :aid "
                         "  )"
@@ -362,6 +375,45 @@ def update_ambulance_online(
     db.commit()
     db.refresh(ambulance)
     return _ambulance_orm_to_out(ambulance, db)
+
+
+def _backfill_incidents_for_location(
+    db: Session, ambulance_id: int, lat: float, lng: float
+) -> None:
+    """Link recent unassigned incidents within range to this ambulance.
+
+    Skips incidents it is already linked to and ones it cancelled. Best-effort:
+    any failure (e.g. non-spatial test DB) leaves the location update intact.
+    """
+    try:
+        with db.begin_nested():
+            rows = db.execute(
+                text(
+                    "SELECT i.id FROM incidents i "
+                    "WHERE i.assigned_ambulance_id IS NULL "
+                    "  AND i.status != 'completed' "
+                    "  AND i.created_at >= NOW() - (:window || ' minutes')::interval "
+                    "  AND ST_DWithin("
+                    "        i.location, ST_MakePoint(:lng, :lat)::geography, :radius_m) "
+                    "  AND NOT EXISTS ( "
+                    "        SELECT 1 FROM inci_ambu_cancelled c "
+                    "        WHERE c.incident_id = i.id AND c.ambulance_id = :aid ) "
+                    "  AND NOT EXISTS ( "
+                    "        SELECT 1 FROM inci_ambu ia "
+                    "        WHERE ia.incident_id = i.id AND ia.ambulance_id = :aid )"
+                ),
+                {
+                    "window": settings.BACKFILL_WINDOW_MINUTES,
+                    "lat": lat,
+                    "lng": lng,
+                    "radius_m": settings.CANDIDATE_RADIUS_KM * 1000.0,
+                    "aid": ambulance_id,
+                },
+            ).fetchall()
+            for r in rows:
+                db.add(IncidentAmbulance(incident_id=r.id, ambulance_id=ambulance_id))
+    except Exception as exc:
+        logger.debug("[Ambulances] Location backfill skipped (%s).", exc)
 
 
 # ── PATCH /ambulances/{id}/location ───────────────────────────────────────────
@@ -386,6 +438,14 @@ def update_ambulance_location(
 
     ambulance.location = _wkt_point(body.location.lat, body.location.lng)
     ambulance.location_updated_at = datetime.now(timezone.utc)
+
+    # An online, free ambulance that has just moved into range of a recent
+    # unassigned incident (or just got a fresh fix) should be offered it, so
+    # incidents are not missed because of timing at creation.
+    if ambulance.is_online and ambulance.is_available:
+        _backfill_incidents_for_location(
+            db, ambulance.id, body.location.lat, body.location.lng
+        )
     db.commit()
     db.refresh(ambulance)
     return _ambulance_orm_to_out(ambulance, db)
@@ -561,6 +621,58 @@ def accept_ambulance_incident(
     return _build_incident_out(incident, db)
 
 
+# ── POST /ambulances/{id}/incidents/{id}/reject ───────────────────────────────
+
+@router.post(
+    "/{ambulance_id}/incidents/{incident_id}/reject",
+    summary="Driver rejects an incident request",
+)
+def reject_ambulance_incident(
+    ambulance_id: int,
+    incident_id: int,
+    driver: Driver = Depends(get_current_driver),
+    db: Session = Depends(get_db),
+):
+    """
+    Called by a driver to turn down an incident requested to their ambulance.
+
+    Removes this ambulance's request row so the incident disappears from its
+    list, and remembers the rejection so the incident is not offered to this
+    ambulance again (backfill). Other ambulances and the incident itself are
+    unaffected. Returns 404 if the incident does not exist, and 409 if it is no
+    longer requested to this ambulance (already taken, cancelled or rejected).
+    """
+    _verify_driver_ambulance_access(ambulance_id, driver, db)
+
+    if not db.execute(
+        text("SELECT 1 FROM incidents WHERE id = :iid"), {"iid": incident_id}
+    ).fetchone():
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    deleted = db.execute(
+        text("DELETE FROM inci_ambu WHERE incident_id = :iid AND ambulance_id = :aid"),
+        {"iid": incident_id, "aid": ambulance_id},
+    )
+    if deleted.rowcount == 0:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Incident {incident_id} is no longer requested to ambulance {ambulance_id}.",
+        )
+
+    already = db.execute(
+        text(
+            "SELECT 1 FROM inci_ambu_cancelled "
+            "WHERE incident_id = :iid AND ambulance_id = :aid"
+        ),
+        {"iid": incident_id, "aid": ambulance_id},
+    ).fetchone()
+    if not already:
+        db.add(IncidentAmbulanceCancellation(incident_id=incident_id, ambulance_id=ambulance_id))
+    db.commit()
+    return {"incident_id": incident_id, "ambulance_id": ambulance_id, "status": "rejected"}
+
+
 # ── POST /ambulances/{id}/incidents/{id}/cancel ───────────────────────────────
 
 @router.post(
@@ -578,8 +690,9 @@ def cancel_ambulance_incident(
     Called by the driver when they want to cancel a mission they accepted.
 
     Effect:
-    - Clears `assigned_ambulance_id` and `assigned_hospital_id` on the incident.
-    - Resets status back to `'pending'`.
+    - Clears `assigned_ambulance_id` on the incident. An already-accepted hospital
+      stays assigned (status goes to `'hospital_assigned'`); with no hospital yet the
+      status returns to `'pending'`. Hospital broadcasts are never touched.
     - Marks all existing `inci_ambu` rows for this incident as deleted
       (removes them) and re-inserts candidate links for every *online, available*
       ambulance that is NOT the cancelling one, so they appear in those drivers'
@@ -618,13 +731,16 @@ def cancel_ambulance_incident(
             detail=f"Ambulance {ambulance_id} is not the assigned ambulance for incident {incident_id}.",
         )
 
-    # 1. Unassign the incident and reset to pending
+    # 1. Unassign the ambulance only. If a hospital has already accepted the
+    #    case it stays assigned (and its broadcast stays 'accepted'): the incident
+    #    goes back to 'hospital_assigned' and is re-offered to ambulances, not to
+    #    hospitals. With no hospital yet it simply returns to 'pending'.
     db.execute(
         text(
             "UPDATE incidents "
             "SET assigned_ambulance_id = NULL, "
-            "    assigned_hospital_id  = NULL, "
-            "    status                = 'pending' "
+            "    status = CASE WHEN assigned_hospital_id IS NOT NULL "
+            "                  THEN 'hospital_assigned' ELSE 'pending' END "
             "WHERE id = :iid"
         ),
         {"iid": incident_id},
@@ -642,36 +758,73 @@ def cancel_ambulance_incident(
         {"iid": incident_id},
     )
 
-    # 4. Re-broadcast: insert inci_ambu for every online+available ambulance
-    #    except the one that just cancelled.
+    # 3b. Remember who cancelled so the incident is never offered back to them
+    #     (re-broadcast below, or the online / location backfill later).
+    already = db.execute(
+        text(
+            "SELECT 1 FROM inci_ambu_cancelled "
+            "WHERE incident_id = :iid AND ambulance_id = :aid"
+        ),
+        {"iid": incident_id, "aid": ambulance_id},
+    ).fetchone()
+    if not already:
+        db.add(IncidentAmbulanceCancellation(incident_id=incident_id, ambulance_id=ambulance_id))
+        db.flush()
+
+    # 4. Re-broadcast with the same rules as incident creation: online,
+    #    available, fresh GPS, within radius, nearest first, never anyone who
+    #    already cancelled this incident.
+    inc_pos = db.execute(
+        text(
+            "SELECT ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lng "
+            "FROM incidents WHERE id = :iid"
+        ),
+        {"iid": incident_id},
+    ).fetchone() if db.bind.dialect.name != "sqlite" else None
     try:
+        if inc_pos is None:
+            raise RuntimeError("no spatial support")
         candidate_rows = db.execute(
             text(
                 "SELECT a.id FROM ambulances a "
                 "WHERE a.is_online = true "
                 "  AND a.is_available = true "
-                "  AND a.id != :exclude_aid "
                 "  AND a.location IS NOT NULL "
-                "ORDER BY ST_Distance("
-                "    a.location, "
-                "    (SELECT location FROM incidents WHERE id = :iid)"
-                ") ASC "
-                f"LIMIT {settings.MAX_AMBULANCES_PER_INCIDENT}"
+                "  AND a.location_updated_at >= NOW() - (:freshness || ' seconds')::interval "
+                "  AND ST_DWithin(a.location, ST_MakePoint(:lng, :lat)::geography, :radius_m) "
+                "  AND NOT EXISTS ( "
+                "        SELECT 1 FROM inci_ambu_cancelled c "
+                "        WHERE c.incident_id = :iid AND c.ambulance_id = a.id "
+                "  ) "
+                "ORDER BY ST_Distance(a.location, ST_MakePoint(:lng, :lat)::geography) ASC "
+                "LIMIT :max_amb"
             ),
-            {"iid": incident_id, "exclude_aid": ambulance_id},
+            {
+                "iid": incident_id,
+                "lat": inc_pos.lat,
+                "lng": inc_pos.lng,
+                "radius_m": settings.CANDIDATE_RADIUS_KM * 1000.0,
+                "freshness": settings.LOCATION_FRESHNESS_SECONDS,
+                "max_amb": settings.MAX_AMBULANCES_PER_INCIDENT,
+            },
         ).fetchall()
     except Exception as exc:
         logger.warning(
             "[Ambulances] Spatial re-broadcast query failed (%s); falling back to non-spatial.", exc
         )
         try:
+            # Fallback for non-spatial DB environments (e.g. SQLite unit tests)
             candidate_rows = db.execute(
                 text(
                     "SELECT a.id FROM ambulances a "
-                    "WHERE a.is_online = true AND a.is_available = true AND a.id != :exclude_aid "
-                    f"LIMIT {settings.MAX_AMBULANCES_PER_INCIDENT}"
+                    "WHERE a.is_online = true AND a.is_available = true "
+                    "  AND NOT EXISTS ( "
+                    "        SELECT 1 FROM inci_ambu_cancelled c "
+                    "        WHERE c.incident_id = :iid AND c.ambulance_id = a.id "
+                    "  ) "
+                    "LIMIT :max_amb"
                 ),
-                {"exclude_aid": ambulance_id},
+                {"iid": incident_id, "max_amb": settings.MAX_AMBULANCES_PER_INCIDENT},
             ).fetchall()
         except Exception:
             candidate_rows = []

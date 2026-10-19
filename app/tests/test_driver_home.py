@@ -32,6 +32,7 @@ from app.models.ambulance import Ambulance
 from app.models.ambulance_driver import AmbulanceDriver
 from app.models.incident import Incident
 from app.models.incident_ambulance import IncidentAmbulance
+from app.models.incident_ambulance_cancellation import IncidentAmbulanceCancellation
 from app.models.incident_broadcast import IncidentBroadcast
 from app.models.hospital import Hospital
 from app.models.user import User
@@ -95,6 +96,7 @@ _TEST_TABLES = [
     AmbulanceDriver.__table__,
     Incident.__table__,
     IncidentAmbulance.__table__,
+    IncidentAmbulanceCancellation.__table__,
     IncidentBroadcast.__table__,
     Hospital.__table__,
 ]

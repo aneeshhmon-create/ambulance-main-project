@@ -95,3 +95,43 @@ A command-line script to simulate hospital acceptance without opening the hospit
   2. Queries `incident_broadcasts` for the matching pending broadcast (`incident_id`, `target_type='hospital'`, `target_id=hospital_id`, `status='pending'`).
   3. Calls the real atomic accept endpoint `POST /incidents/{incident_id}/broadcasts/{broadcast_id}/accept`.
   4. Returns `0` on success and prints the updated status and assigned hospital.
+
+---
+
+## 3. Reject and cancel
+
+### 3.1 `POST /ambulances/{ambulance_id}/incidents/{incident_id}/reject`
+
+A driver turns down an incident that was requested to their ambulance (it is in
+their Home list). The driver app asks for an inline Yes/No confirmation first.
+
+* **Access**: Authenticated driver linked to `ambulance_id`.
+* **Effect**: deletes this ambulance's `inci_ambu` request row and records the
+  rejection in `inci_ambu_cancelled`, so the incident is not offered to this
+  ambulance again (online/location backfill). Other ambulances and the incident
+  are unaffected.
+* **Responses**: `200 {"incident_id", "ambulance_id", "status": "rejected"}`;
+  `401` no/invalid token; `403` driver not linked to the ambulance; `404`
+  incident not found; `409` incident no longer requested to this ambulance
+  (already taken, cancelled or rejected).
+
+### 3.2 `POST /ambulances/{ambulance_id}/incidents/{incident_id}/cancel`
+
+Cancels an accepted incident: unassigns the ambulance, frees it, and re-offers the
+incident to other online ambulances that are available, have a fresh GPS fix and
+are within range. Hospitals are never re-broadcast:
+* If a hospital had already accepted, it stays assigned (the broadcast stays
+  `accepted`) and the incident returns to status `hospital_assigned`. The next driver
+  to accept sees that hospital on the map straight away.
+* If no hospital had accepted yet, the incident returns to `pending`; hospital
+  broadcasts are untouched.
+
+The cancelling ambulance is recorded in `inci_ambu_cancelled` and never offered
+the incident again.
+
+### 3.3 Backfill on location updates
+
+`PATCH /ambulances/{id}/location` from an online, available ambulance also links
+unassigned incidents from the last `BACKFILL_WINDOW_MINUTES` within
+`CANDIDATE_RADIUS_KM`, skipping ones already linked or previously
+rejected/cancelled by that ambulance.
