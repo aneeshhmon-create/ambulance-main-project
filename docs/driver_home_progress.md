@@ -1,4 +1,4 @@
-﻿# Driver Home Feature - Progress Checklist
+# Driver Home Feature - Progress Checklist
 
 Branch: `feature/driver-home`
 Last updated: 2026-10-19 (session 2 complete)
@@ -53,7 +53,7 @@ Last updated: 2026-10-19 (session 2 complete)
 | POST /ambulances/{id}/incidents/{id}/accept | Done | Atomic (FOR UPDATE), 409 on race, removes inci_ambu rows |
 | POST /incidents fan-out instead of auto-assign | Done | _create_incident_core does fan-out |
 | POST /incidents/manual fan-out | Done | Same helper _create_incident_core |
-| Backfill when going online | Done | Spatial query with non-spatial fallback |
+| Backfill when going online | Done | PostGIS ST_MakePoint/joined query with nested savepoint |
 
 ---
 
