@@ -1,12 +1,11 @@
 ﻿# Driver Home Feature - Progress Checklist
 
 Branch: `feature/driver-home`
-Last updated: 2026-10-19
+Last updated: 2026-10-19 (session 2 complete)
 
 ## Legend
 - Done - implemented and matches the spec
 - Partial - exists but has gaps noted below
-- Missing - not yet implemented
 
 ---
 
@@ -99,32 +98,33 @@ Last updated: 2026-10-19
 | requirements.txt complete | Done | fastapi, sqlalchemy, geoalchemy2, pyjwt, google-auth, etc. |
 | Dockerfile system deps | Done | gcc, libpq-dev |
 | docker-compose.yml mounts ./app | Done | Live-reload volume present |
-| alembic/, tests/, root scripts in image | Partial | COPY . . bakes them in; no live volume -- need rebuild after changes |
+| docker-compose.yml mounts alembic/ and tests/ | Done | Added in session 2: alembic/, alembic.ini, tests/, root scripts all volume-mounted |
 
 ---
 
-## FLUTTER - HOME SCREEN
+## FLUTTER - HOME SCREEN (session 2 completions)
 
 | Item | Status | Notes |
 |------|--------|-------|
 | home_screen.dart exists | Done | lib/driver_app/screens/home_screen.dart |
 | Header: Hello name, reg number, vehicle type | Done | |
 | Header: Online/Offline toggle | Done | With loading state |
-| Header: GPS permission + first fix on going online | Done | Geolocator.requestPermission + getCurrentPosition |
-| Header: Sign out / change ambulance | Done | IconButton with confirmation dialog |
+| Header: GPS permission + first fix on going online | Done | Geolocator.requestPermission + getCurrentPosition; snaps back + message if denied |
+| Header: Sign out / change ambulance | Done | IconButton with confirmation dialog; sets offline first |
 | Incident list: scrollable, severity badge, type, distance | Done | _IncidentTile widget |
+| Incident list: Details button + bottom sheet | Done | _IncidentDetailSheet (severity, type, symptoms, victims, dept, transcript, time since) |
 | Incident list: pull-to-refresh | Done | RefreshIndicator |
 | Incident list: polling every 8s while online | Done | Timer.periodic |
 | Incident list: stop polling when offline / disposed | Done | |
-| Incident list: empty state (offline) | Done | |
-| Incident list: empty state (online, no incidents) | Done | |
-| Details button + bottom sheet | MISSING | Tile has no Details button; spec requires bottom sheet with full details |
-| Accept navigates to placeholder IncidentAcceptedScreen | MISSING | Currently shows Snackbar; spec requires minimal placeholder page |
-| HomeFooter as own reusable widget | MISSING | Footer is inlined; spec requires HomeFooter widget class |
-| Live GPS sharing every 5-10s while online | MISSING | Only gets location on toggle; no continuous PATCH /location timer |
+| Incident list: empty state (offline) | Done | Clear message: Toggle Online to receive requests |
+| Incident list: empty state (online, no incidents) | Done | No incoming requests message |
+| Incident list: error state with Retry | Done | Cloud_off icon + error message + Retry button |
+| Accept navigates to IncidentAcceptedScreen | Done | lib/driver_app/screens/incident_accepted_screen.dart |
 | Accept: loading state + double-tap block | Done | _acceptingIds set guards double-tap |
-| Accept: 409 shows clear message | Done | Snackbar with detail message |
-| 401 handling (redirect to auth) | Partial | fetchIncidents throws '401' string but screen only debugPrints it |
+| Accept: 409 shows clear message | Done | snackbar with detail message |
+| HomeFooter as own reusable widget | Done | lib/driver_app/widgets/home_footer.dart |
+| Live GPS sharing every 7s while online | Done | Timer + PATCH /ambulances/{id}/location |
+| 401 handling (redirect to AuthPage) | Done | fetchIncidents 401 -> clearSession -> AuthPage |
 
 ---
 
@@ -132,19 +132,16 @@ Last updated: 2026-10-19
 
 | Item | Status | Notes |
 |------|--------|-------|
-| services/driver_api_service.dart | Done | setOnline, fetchIncidents, acceptIncident, fetchAssignment |
+| services/driver_api_service.dart | Done | setOnline, fetchIncidents, acceptIncident, fetchAssignment, updateLocation |
 | models/driver.dart | Done | DriverModel, AmbulanceModel |
-| Location sharing service / timer | MISSING | Should push PATCH /location every 5-10 s while online |
+| Location sharing via DriverApiService.updateLocation | Done | Called every 7s from home_screen.dart timer |
 
 ---
 
-## REMAINING WORK (ordered)
+## flutter analyze
 
-1. MISSING Flutter: Add Details button to _IncidentTile opening _IncidentDetailSheet bottom sheet
-2. MISSING Flutter: Create lib/driver_app/screens/incident_accepted_screen.dart (minimal placeholder)
-3. MISSING Flutter: Change Accept success flow to navigate to IncidentAcceptedScreen
-4. MISSING Flutter: Create lib/driver_app/widgets/home_footer.dart -- HomeFooter reusable widget
-5. MISSING Flutter: Refactor _buildFooter to use HomeFooter widget
-6. MISSING Flutter: Add live GPS location sharing timer (every 7s) via PATCH /ambulances/{id}/location
-7. Partial Flutter: On 401 from fetchIncidents, redirect to AuthPage
-8. Partial Docker: Add alembic/ + root scripts as live volumes (low priority)
+No issues found. (confirmed 2026-10-19)
+
+---
+
+## EVERYTHING IS DONE - No remaining items
