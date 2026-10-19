@@ -64,3 +64,11 @@ Last updated: 2026-10-19 (session 1 starting)
 | `flutter analyze` clean | Done | 0 issues found across all user and driver app code |
 | Manual testing instructions | Done | Documented in `docs/driver_navigation_progress.md` and report |
 | Known limitations & notes | Done | Cancellation lifecycle, resumption after restart, etc. |
+
+---
+
+## 5. BUG FIXES (POST-DELIVERY)
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Logout-and-return loses active navigation | Done | `_resumeNavigationIfNeeded()` in `home_screen.dart` calls `GET /ambulances/{id}/assignment` on init and on app-resume; navigates to `NavigationScreen` automatically if `assigned=true`. Guard flag `_checkingAssignment` prevents duplicate pushes. Committed `90f673f`. |
