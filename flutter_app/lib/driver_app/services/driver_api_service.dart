@@ -219,6 +219,30 @@ class DriverApiService {
         .toList();
   }
 
+  /// PATCH /ambulances/{id}/location
+  /// Pushes the driver's current GPS position to the backend.
+  /// Called every 7 seconds while the ambulance is online.
+  static Future<void> updateLocation({
+    required int ambulanceId,
+    required double lat,
+    required double lng,
+  }) async {
+    final headers = await _authHeaders();
+    final resp = await http
+        .patch(
+          Uri.parse(_base('/$ambulanceId/location')),
+          headers: headers,
+          body: jsonEncode({
+            'location': {'lat': lat, 'lng': lng},
+          }),
+        )
+        .timeout(const Duration(seconds: 8));
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      // Non-fatal: silently log; caller catches and retries next tick
+      throw _detail(resp) ?? 'Location update failed ${resp.statusCode}';
+    }
+  }
+
   /// POST /ambulances/{ambulanceId}/incidents/{incidentId}/accept
   /// Race-safe accept — throws on HTTP 409 (another ambulance won).
   static Future<void> acceptIncident({

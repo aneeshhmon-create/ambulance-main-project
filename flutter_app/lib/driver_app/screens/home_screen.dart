@@ -5,26 +5,27 @@
 // Layout (matching the hand-sketch requirements):
 //
 //  ┌──────────────────────────────────────────────────┐
-//  │  Hello, <name>       ┌───────────┐  Online ◉   │
-//  │  KL-01-AA-1234       │  [avatar] │             │
-//  │  ALS                 └───────────┘             │
+//  │  [avatar]  Hello, <name>      Online ◉  [logout] │
+//  │            KL-01-AA-1234                          │
+//  │            ALS                                    │
 //  ├──────────────────────────────────────────────────┤
-//  │  Incident 1  (severity badge / type)  [Accept]  │
-//  │  ─────────────────────────────────────────────  │
-//  │  Incident 2  …                        [Accept]  │
-//  │  (empty state when offline or no incidents)     │
+//  │  [Details]  Incident N  (severity / type)  [Accept] │
+//  │  ─────────────────────────────────────────────   │
+//  │  (empty state when offline or no incidents)       │
 //  ├──────────────────────────────────────────────────┤
 //  │  ╔══════════════════════════════════════════════╗ │
-//  │  ║  Active Assignment (hidden when idle)        ║ │
+//  │  ║  HomeFooter (status / future features)       ║ │
 //  │  ╚══════════════════════════════════════════════╝ │
 //  └──────────────────────────────────────────────────┘
 //
 // State machine:
-//   • Toggle online  → PATCH /ambulances/{id}/online  (also starts GPS updates)
-//   • Polling        → every 8 s: GET /ambulances/{id}/incidents
-//                                  GET /ambulances/{id}/assignment
-//   • Accept         → POST  /ambulances/{id}/incidents/{iid}/accept  →
-//                      race 409 shows snackbar; success refreshes state
+//   • Toggle online  → PATCH /ambulances/{id}/online   (also starts GPS timer)
+//   • GPS timer      → every 7 s: PATCH /ambulances/{id}/location
+//   • Poll timer     → every 8 s: GET  /ambulances/{id}/incidents
+//                                  GET  /ambulances/{id}/assignment
+//   • Accept         → POST /ambulances/{id}/incidents/{iid}/accept →
+//                      navigate to IncidentAcceptedScreen (race 409 shows snackbar)
+//   • Details        → showModalBottomSheet with full incident fields
 
 import 'dart:async';
 
@@ -35,6 +36,8 @@ import 'package:ambulance_app/driver_app/models/driver.dart';
 import 'package:ambulance_app/driver_app/services/auth_service.dart';
 import 'package:ambulance_app/driver_app/services/driver_api_service.dart';
 import 'package:ambulance_app/driver_app/screens/auth_page.dart';
+import 'package:ambulance_app/driver_app/screens/incident_accepted_screen.dart';
+import 'package:ambulance_app/driver_app/widgets/home_footer.dart';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -81,12 +84,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
 
   List<IncidentRequest> _incidents = [];
   bool _loadingIncidents = false;
-
-  ActiveAssignment? _assignment;
+  String? _incidentError;
 
   final Set<int> _acceptingIds = {};
 
   Timer? _pollTimer;
+  Timer? _locationTimer;
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
@@ -95,12 +98,16 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _isOnline = widget.ambulance.isOnline;
-    if (_isOnline) _startPolling();
+    if (_isOnline) {
+      _startPolling();
+      _startLocationSharing();
+    }
   }
 
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _locationTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -129,17 +136,82 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
     if (!_isOnline || !mounted) return;
     final id = widget.ambulance.id;
     try {
+      setState(() {
+        _loadingIncidents = true;
+        _incidentError = null;
+      });
       final incidents = await DriverApiService.fetchIncidents(id);
-      if (mounted) setState(() => _incidents = incidents);
+      if (mounted) {
+        setState(() {
+          _incidents = incidents;
+          _loadingIncidents = false;
+        });
+      }
+    } on String catch (e) {
+      if (!mounted) return;
+      // 401 — session expired: redirect to auth
+      if (e.contains('Session expired') || e.contains('401')) {
+        await AuthService.clearSession();
+        if (!mounted) return;
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const AuthPage()),
+          (route) => false,
+        );
+        return;
+      }
+      setState(() {
+        _loadingIncidents = false;
+        _incidentError = e;
+      });
     } catch (e) {
-      // silently ignore transient network errors during polling
+      if (mounted) {
+        setState(() {
+          _loadingIncidents = false;
+          _incidentError = e.toString();
+        });
+      }
       debugPrint('[HomeScreen] fetchIncidents error: $e');
     }
+  }
+
+  // ── Live GPS location sharing ────────────────────────────────────────────────
+
+  void _startLocationSharing() {
+    _locationTimer?.cancel();
+    // Push location every 7 seconds while online
+    _locationTimer = Timer.periodic(
+      const Duration(seconds: 7),
+      (_) => _pushLocation(),
+    );
+  }
+
+  void _stopLocationSharing() {
+    _locationTimer?.cancel();
+    _locationTimer = null;
+  }
+
+  Future<void> _pushLocation() async {
+    if (!_isOnline || !mounted) return;
     try {
-      final assignment = await DriverApiService.fetchAssignment(id);
-      if (mounted) setState(() => _assignment = assignment);
+      final perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) {
+        return; // silently skip if permission was revoked
+      }
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 5),
+        ),
+      );
+      await DriverApiService.updateLocation(
+        ambulanceId: widget.ambulance.id,
+        lat: pos.latitude,
+        lng: pos.longitude,
+      );
     } catch (e) {
-      debugPrint('[HomeScreen] fetchAssignment error: $e');
+      // Non-fatal: GPS or network hiccup; will retry next tick
+      debugPrint('[HomeScreen] _pushLocation error: $e');
     }
   }
 
@@ -151,25 +223,52 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
 
     double? lat, lng;
     if (value) {
-      // Try to get GPS; non-fatal if denied
+      // Request permission and get first GPS fix when going online
       try {
-        final perm = await Geolocator.checkPermission();
-        LocationPermission granted = perm;
+        LocationPermission perm = await Geolocator.checkPermission();
         if (perm == LocationPermission.denied) {
-          granted = await Geolocator.requestPermission();
+          perm = await Geolocator.requestPermission();
         }
-        if (granted != LocationPermission.denied &&
-            granted != LocationPermission.deniedForever) {
-          final pos = await Geolocator.getCurrentPosition(
-            locationSettings: const LocationSettings(
-              accuracy: LocationAccuracy.high,
-              timeLimit: Duration(seconds: 6),
-            ),
-          );
-          lat = pos.latitude;
-          lng = pos.longitude;
+        if (perm == LocationPermission.deniedForever) {
+          if (mounted) {
+            _showError(
+              'Location permission is permanently denied. '
+              'Enable it in Settings to go online.',
+            );
+          }
+          setState(() => _togglingOnline = false);
+          return;
         }
-      } catch (_) {}
+        if (perm == LocationPermission.denied) {
+          if (mounted) {
+            _showError(
+              'Location permission denied. '
+              'Grant permission to share your location.',
+            );
+          }
+          setState(() => _togglingOnline = false);
+          return;
+        }
+        final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+        if (!serviceEnabled) {
+          if (mounted) {
+            _showError('GPS is disabled. Enable location services to go online.');
+          }
+          setState(() => _togglingOnline = false);
+          return;
+        }
+        final pos = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            timeLimit: Duration(seconds: 6),
+          ),
+        );
+        lat = pos.latitude;
+        lng = pos.longitude;
+      } catch (e) {
+        // Non-fatal: proceed without initial location if GPS times out
+        debugPrint('[HomeScreen] GPS init error: $e');
+      }
     }
 
     try {
@@ -185,13 +284,15 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
         _isOnline = value;
         if (!value) {
           _incidents = [];
-          _assignment = null;
+          _incidentError = null;
         }
       });
       if (value) {
         _startPolling();
+        _startLocationSharing();
       } else {
         _stopPolling();
+        _stopLocationSharing();
       }
     } catch (e) {
       if (!mounted) return;
@@ -211,21 +312,35 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
         ambulanceId: widget.ambulance.id,
         incidentId: incident.id,
       );
-      // Immediately poll to refresh lists
-      await _poll();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Incident #${incident.id} accepted — en route!'),
-            backgroundColor: const Color(0xFF388E3C),
-          ),
-        );
-      }
+      // Refresh incident list in background
+      _poll();
+      if (!mounted) return;
+      // Navigate to placeholder "Incident accepted" screen
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => IncidentAcceptedScreen(incidentId: incident.id),
+        ),
+      );
+      // On return, refresh again in case the user backed out
+      if (mounted) _poll();
     } catch (e) {
       if (mounted) _showError(e.toString());
     } finally {
       if (mounted) setState(() => _acceptingIds.remove(incident.id));
     }
+  }
+
+  // ── Show details bottom sheet ─────────────────────────────────────────────────
+
+  void _showDetails(IncidentRequest incident) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => _IncidentDetailSheet(incident: incident),
+    );
   }
 
   // ── Sign out ──────────────────────────────────────────────────────────────────
@@ -252,6 +367,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
     );
     if (confirmed != true || !mounted) return;
     _stopPolling();
+    _stopLocationSharing();
     await AuthService.clearSession();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
@@ -287,7 +403,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
             _buildHeader(theme, cs),
             const Divider(height: 1, thickness: 1),
             Expanded(child: _buildIncidentList(theme, cs)),
-            _buildFooter(theme, cs),
+            HomeFooter(isOnline: _isOnline),
           ],
         ),
       ),
@@ -382,7 +498,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
                   : Switch(
                       value: _isOnline,
                       onChanged: _toggleOnline,
-                      activeColor: const Color(0xFF388E3C),
+                      activeThumbColor: const Color(0xFF388E3C),
                       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
             ],
@@ -418,7 +534,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
             ),
             const SizedBox(height: 6),
             Text(
-              'Toggle Online to start receiving\nincident requests.',
+              'Go online to receive emergency requests.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: cs.outline,
@@ -433,6 +549,40 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
       return const Center(child: CircularProgressIndicator());
     }
 
+    // Show error state with retry button
+    if (_incidentError != null && _incidents.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.cloud_off_rounded, size: 56, color: cs.outlineVariant),
+              const SizedBox(height: 16),
+              Text(
+                'Failed to load requests',
+                style: theme.textTheme.titleMedium
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _incidentError!,
+                textAlign: TextAlign.center,
+                style:
+                    theme.textTheme.bodySmall?.copyWith(color: cs.outline),
+              ),
+              const SizedBox(height: 20),
+              OutlinedButton.icon(
+                onPressed: _poll,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     if (_incidents.isEmpty) {
       return Center(
         child: Column(
@@ -442,14 +592,14 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
                 size: 56, color: cs.outlineVariant),
             const SizedBox(height: 16),
             Text(
-              'No pending incidents',
+              'No incoming requests',
               style: theme.textTheme.titleMedium?.copyWith(
                 color: cs.onSurfaceVariant,
               ),
             ),
             const SizedBox(height: 6),
             Text(
-              'New requests will appear here\nautomatically.',
+              'New requests will appear here automatically.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: cs.outline,
@@ -466,166 +616,14 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.symmetric(vertical: 8),
         itemCount: _incidents.length,
-        separatorBuilder: (_, __) => const Divider(height: 1, indent: 16, endIndent: 16),
+        separatorBuilder: (_, __) =>
+            const Divider(height: 1, indent: 16, endIndent: 16),
         itemBuilder: (context, i) => _IncidentTile(
           incident: _incidents[i],
           accepting: _acceptingIds.contains(_incidents[i].id),
           onAccept: () => _accept(_incidents[i]),
+          onDetails: () => _showDetails(_incidents[i]),
         ),
-      ),
-    );
-  }
-
-  // ── Footer / Active Assignment ─────────────────────────────────────────────────
-
-  Widget _buildFooter(ThemeData theme, ColorScheme cs) {
-    final asgn = _assignment;
-
-    // Active assignment card
-    if (asgn != null && asgn.assigned) {
-      return Container(
-        margin: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: cs.primaryContainer,
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: cs.primary.withOpacity(0.15),
-              blurRadius: 12,
-              offset: const Offset(0, -4),
-            ),
-          ],
-        ),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.emergency_rounded,
-                      color: cs.onPrimaryContainer, size: 18),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Active: Incident #${asgn.incidentId}',
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: cs.onPrimaryContainer,
-                    ),
-                  ),
-                  const Spacer(),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: _severityColor(asgn.severity),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      _severityLabel(asgn.severity),
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              if (asgn.emergencyType != null)
-                Text(
-                  asgn.emergencyType!,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: cs.onPrimaryContainer,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  Icon(Icons.person_pin_rounded,
-                      size: 14, color: cs.onPrimaryContainer.withOpacity(0.7)),
-                  const SizedBox(width: 4),
-                  Text(
-                    asgn.patientName ?? 'Patient',
-                    style: theme.textTheme.bodySmall
-                        ?.copyWith(color: cs.onPrimaryContainer.withOpacity(0.8)),
-                  ),
-                  if (asgn.distanceToPatientKm != null) ...[
-                    const SizedBox(width: 12),
-                    Icon(Icons.straighten_rounded,
-                        size: 14,
-                        color: cs.onPrimaryContainer.withOpacity(0.7)),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${asgn.distanceToPatientKm!.toStringAsFixed(1)} km',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                          color: cs.onPrimaryContainer.withOpacity(0.8)),
-                    ),
-                  ],
-                ],
-              ),
-              if (asgn.hospitalName != null) ...[
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    Icon(Icons.local_hospital_rounded,
-                        size: 14,
-                        color: cs.onPrimaryContainer.withOpacity(0.7)),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        asgn.hospitalName!,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                            color: cs.onPrimaryContainer.withOpacity(0.8)),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-              ] else ...[
-                const SizedBox(height: 4),
-                Text(
-                  'Awaiting hospital assignment…',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: cs.onPrimaryContainer.withOpacity(0.6),
-                    fontStyle: FontStyle.italic,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      );
-    }
-
-    // Idle footer
-    return Container(
-      margin: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            _isOnline
-                ? Icons.radio_button_checked_rounded
-                : Icons.radio_button_unchecked_rounded,
-            size: 14,
-            color: _isOnline ? const Color(0xFF388E3C) : cs.outline,
-          ),
-          const SizedBox(width: 8),
-          Text(
-            _isOnline ? 'Waiting for incident requests…' : 'Go online to receive calls',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: _isOnline ? cs.onSurface : cs.outline,
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -637,11 +635,13 @@ class _IncidentTile extends StatelessWidget {
   final IncidentRequest incident;
   final bool accepting;
   final VoidCallback onAccept;
+  final VoidCallback onDetails;
 
   const _IncidentTile({
     required this.incident,
     required this.accepting,
     required this.onAccept,
+    required this.onDetails,
   });
 
   @override
@@ -652,20 +652,21 @@ class _IncidentTile extends StatelessWidget {
     final sevColor = _severityColor(sev);
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          // Left: severity bar
+          // Severity bar
           Container(
             width: 4,
-            height: 56,
+            height: 64,
             decoration: BoxDecoration(
               color: sevColor,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
+
           // Middle: incident info
           Expanded(
             child: Column(
@@ -673,13 +674,14 @@ class _IncidentTile extends StatelessWidget {
               children: [
                 Row(
                   children: [
+                    // Severity badge
                     Container(
                       padding:
                           const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                       decoration: BoxDecoration(
-                        color: sevColor.withOpacity(0.12),
+                        color: sevColor.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: sevColor.withOpacity(0.4)),
+                        border: Border.all(color: sevColor.withValues(alpha: 0.4)),
                       ),
                       child: Text(
                         _severityLabel(sev),
@@ -699,7 +701,7 @@ class _IncidentTile extends StatelessWidget {
                     ),
                   ],
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 3),
                 Text(
                   incident.emergencyType ?? 'Emergency',
                   style: theme.textTheme.titleSmall?.copyWith(
@@ -710,8 +712,7 @@ class _IncidentTile extends StatelessWidget {
                 const SizedBox(height: 2),
                 Row(
                   children: [
-                    Icon(Icons.people_rounded,
-                        size: 13, color: cs.onSurfaceVariant),
+                    Icon(Icons.people_rounded, size: 13, color: cs.onSurfaceVariant),
                     const SizedBox(width: 4),
                     Text(
                       '${incident.victims} victim${incident.victims != 1 ? "s" : ""}',
@@ -748,37 +749,340 @@ class _IncidentTile extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 12),
-          // Right: Accept button
-          accepting
-              ? const SizedBox(
-                  width: 64,
-                  height: 36,
-                  child: Center(
-                      child: SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2))),
-                )
-              : FilledButton(
-                  onPressed: onAccept,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: cs.primary,
-                    foregroundColor: cs.onPrimary,
+          const SizedBox(width: 8),
+
+          // Right: Details + Accept buttons
+          Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // Details button (outlined, smaller)
+              SizedBox(
+                height: 30,
+                child: OutlinedButton(
+                  onPressed: onDetails,
+                  style: OutlinedButton.styleFrom(
                     padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
                     minimumSize: Size.zero,
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(8),
                     ),
                   ),
-                  child: const Text('Accept',
-                      style:
-                          TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+                  child: Text(
+                    'Details',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
                 ),
+              ),
+              const SizedBox(height: 6),
+              // Accept button (filled)
+              accepting
+                  ? const SizedBox(
+                      width: 64,
+                      height: 30,
+                      child: Center(
+                          child: SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2))),
+                    )
+                  : SizedBox(
+                      height: 30,
+                      child: FilledButton(
+                        onPressed: onAccept,
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 0),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        child: const Text(
+                          'Accept',
+                          style: TextStyle(
+                              fontSize: 12, fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ),
+            ],
+          ),
         ],
       ),
+    );
+  }
+}
+
+// ── Incident Detail Bottom Sheet ─────────────────────────────────────────────
+
+class _IncidentDetailSheet extends StatelessWidget {
+  final IncidentRequest incident;
+
+  const _IncidentDetailSheet({required this.incident});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final sev = incident.severity;
+    final sevColor = _severityColor(sev);
+    final since = _timeSince(incident.createdAt);
+
+    return DraggableScrollableSheet(
+      initialChildSize: 0.55,
+      minChildSize: 0.35,
+      maxChildSize: 0.92,
+      expand: false,
+      builder: (ctx, scrollController) => Container(
+        decoration: BoxDecoration(
+          color: cs.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          children: [
+            // Drag handle
+            Padding(
+              padding: const EdgeInsets.only(top: 12, bottom: 4),
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: cs.outlineVariant,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                controller: scrollController,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                children: [
+                  // Title row
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Incident #${incident.id}',
+                          style: theme.textTheme.headlineSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: sevColor,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          _severityLabel(sev),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Reported $since',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: cs.onSurfaceVariant),
+                  ),
+                  const Divider(height: 24),
+
+                  // Emergency type
+                  _DetailRow(
+                    icon: Icons.emergency_rounded,
+                    label: 'Emergency Type',
+                    value: incident.emergencyType ?? '—',
+                    theme: theme,
+                    cs: cs,
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Victims
+                  _DetailRow(
+                    icon: Icons.people_rounded,
+                    label: 'Victims',
+                    value: '${incident.victims}',
+                    theme: theme,
+                    cs: cs,
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Department
+                  if (incident.departmentNeeded != null) ...[
+                    _DetailRow(
+                      icon: Icons.local_hospital_rounded,
+                      label: 'Department Needed',
+                      value: incident.departmentNeeded!,
+                      theme: theme,
+                      cs: cs,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
+                  // Distance
+                  if (incident.distanceKm != null) ...[
+                    _DetailRow(
+                      icon: Icons.navigation_rounded,
+                      label: 'Distance',
+                      value:
+                          '${incident.distanceKm!.toStringAsFixed(2)} km away',
+                      theme: theme,
+                      cs: cs,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
+                  // Symptoms
+                  if (incident.symptoms.isNotEmpty) ...[
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.sick_rounded,
+                            size: 18, color: cs.onSurfaceVariant),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Symptoms',
+                                style: theme.textTheme.labelMedium?.copyWith(
+                                  color: cs.onSurfaceVariant,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Wrap(
+                                spacing: 6,
+                                runSpacing: 4,
+                                children: incident.symptoms
+                                    .map(
+                                      (s) => Chip(
+                                        label: Text(s,
+                                            style: const TextStyle(
+                                                fontSize: 12)),
+                                        padding: EdgeInsets.zero,
+                                        visualDensity:
+                                            VisualDensity.compact,
+                                        backgroundColor:
+                                            cs.surfaceContainerHighest,
+                                      ),
+                                    )
+                                    .toList(),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
+                  // Transcript
+                  if (incident.transcript != null &&
+                      incident.transcript!.isNotEmpty) ...[
+                    const Divider(height: 20),
+                    Text(
+                      'Call Transcript',
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: cs.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        incident.transcript!,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: cs.onSurface,
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+
+                  const SizedBox(height: 24),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Human-readable time since the incident was reported.
+  String _timeSince(DateTime createdAt) {
+    final diff = DateTime.now().difference(createdAt.toLocal());
+    if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+    if (diff.inHours < 24) return '${diff.inHours} hr ago';
+    return '${diff.inDays} days ago';
+  }
+}
+
+class _DetailRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final ThemeData theme;
+  final ColorScheme cs;
+
+  const _DetailRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.theme,
+    required this.cs,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 18, color: cs.onSurfaceVariant),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: theme.textTheme.labelMedium
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                value,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: cs.onSurface,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
