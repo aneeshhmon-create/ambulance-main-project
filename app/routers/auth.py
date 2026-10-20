@@ -145,8 +145,8 @@ def _verify_google_token(token: str) -> dict:
             google_requests.Request(),
             settings.GOOGLE_CLIENT_ID,
         )
-    except ValueError as exc:
-        # verify_oauth2_token raises ValueError for any validation failure,
+    except Exception as exc:
+        # verify_oauth2_token raises ValueError or GoogleAuthError for validation failure,
         # including when an OAuth2 access token is passed from Flutter Web.
         # Fall back to validating the access token with Google's endpoints.
         try:
@@ -175,7 +175,7 @@ def _verify_google_token(token: str) -> dict:
             logger.warning("Google token verification failed: %s", exc)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired Google ID token.",
+                detail=f"Invalid or expired Google ID token: {exc}",
             )
 
     email_verified = id_info.get("email_verified")
