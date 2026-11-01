@@ -31,6 +31,8 @@ Race safety                : SELECT ... FOR UPDATE on the incident row inside
 import os
 import shutil
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
@@ -48,7 +50,7 @@ from app.models.incident_ambulance import IncidentAmbulance
 from app.schemas.incident import IncidentCreate, IncidentOut, BroadcastOut
 from app.schemas.ambulance import AmbulanceOut
 from app.schemas.hospital import LocationSchema
-from app.services.stt_service import transcribe_audio
+from app.services.stt_service import transcribe_only, translate_to_english
 from app.services.extraction_service import extract_severity
 
 logger = logging.getLogger(__name__)
@@ -327,7 +329,7 @@ def create_incident_from_audio(
     """
     Real emergency dispatch intake flow:
     1. Receives audio stream / file from caller
-    2. Transcribes speech via Whisper STT (handles Malayalam, English, and Code-switching)
+    2. Transcribes speech via Gemini STT (handles Malayalam, English, and Code-switching)
     3. Extracts severity, emergency type, symptoms, victim count, and needed department via Gemini LLM
     4. Creates incident and broadcasts to matching nearby hospitals
     5. Auto-assigns nearest available ambulance
@@ -340,12 +342,25 @@ def create_incident_from_audio(
             shutil.copyfileobj(audio_file.file, tmp)
             tmp_path = tmp.name
 
-        # a. Speech to text
-        stt_result = transcribe_audio(tmp_path)
-        transcript = stt_result.get("transcript", "")
+        t0 = time.perf_counter()
 
-        # b. Severity & department extraction
-        extracted = extract_severity(transcript)
+        # a. Speech to text (Gemini): transcript in the spoken language
+        stt_result = transcribe_only(tmp_path)
+        original = stt_result.get("original_transcript", "")
+        t_stt = time.perf_counter()
+
+        # b. English translation and severity extraction run in parallel
+        #    (the extraction prompt understands Malayalam directly)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_translate = pool.submit(translate_to_english, original)
+            f_extract = pool.submit(extract_severity, original)
+            transcript = f_translate.result()
+            extracted = f_extract.result()
+        t_llm = time.perf_counter()
+        logger.info(
+            "[Incidents] Timing: transcribe=%.2fs translate+extract=%.2fs",
+            t_stt - t0, t_llm - t_stt,
+        )
 
         # c. & d. Create incident & dispatch
         return _create_incident_core(

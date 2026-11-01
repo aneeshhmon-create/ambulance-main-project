@@ -20,8 +20,9 @@ import logging
 from typing import Any
 
 from dotenv import load_dotenv
-from google import genai
 from google.genai import types
+
+from app.services.gemini_client import get_api_key, get_client
 
 load_dotenv()
 load_dotenv(os.path.expanduser("~/.env"))
@@ -53,14 +54,17 @@ SAFE_FALLBACK: dict[str, Any] = {
 }
 
 # Candidate models in priority order with automatic fallback
-_CANDIDATE_MODELS = [
-    "gemini-flash-latest",
-    "gemini-flash-lite-latest",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-pro",
-]
+# Per-attempt HTTP timeout (ms) so one slow/hung model can't stall the request.
+_REQUEST_TIMEOUT_MS = 12000  # API minimum deadline is 10s
 
+# Fast models only (pro is too slow for a live dispatch flow).
+# Free tier allows only ~20 requests/day *per model*, so lite goes first and the
+# others act as fallbacks (also on 429/503).
+_CANDIDATE_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-flash-latest",
+]
 
 def _build_prompt(transcript: str) -> str:
     departments_str = ", ".join(f'"{d}"' for d in VALID_DEPARTMENTS)
@@ -105,8 +109,7 @@ def extract_severity(transcript: str) -> dict[str, Any]:
         logger.warning("[Extraction] Empty transcript received. Returning fallback.")
         return dict(SAFE_FALLBACK)
 
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
+    if not get_api_key():
         logger.warning(
             "[Extraction] Neither GEMINI_API_KEY nor GOOGLE_API_KEY found in environment. "
             "Returning safe fallback."
@@ -114,23 +117,22 @@ def extract_severity(transcript: str) -> dict[str, Any]:
         return dict(SAFE_FALLBACK)
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = get_client()
         prompt = _build_prompt(transcript)
 
         response = None
         last_error = None
         for model_name in _CANDIDATE_MODELS:
             try:
-                res = client.models.generate_content(
+                res = client.interactions.create(
                     model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1,
-                    ),
+                    input=prompt,
+                    generation_config={"temperature": 0.1, "thinking_level": "low"},
+                    timeout=_REQUEST_TIMEOUT_MS / 1000,
                 )
-                if res and res.text:
-                    response = res
+                text = res.output_text
+                if text:
+                    response = text
                     logger.info("[Extraction] Successfully used model: %s", model_name)
                     break
             except Exception as e:
@@ -140,10 +142,10 @@ def extract_severity(transcript: str) -> dict[str, Any]:
                     model_name, e,
                 )
 
-        if not response or not response.text:
+        if not response:
             raise RuntimeError(f"All candidate models failed. Last error: {last_error}")
 
-        raw_text = response.text or ""
+        raw_text = response
         # Clean any potential backticks or whitespace
         cleaned = raw_text.strip()
         if cleaned.startswith("```json"):

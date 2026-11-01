@@ -26,9 +26,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db.base import Base
 from app.db import get_db
 
-# Mock WhisperModel before app.main import to prevent remote HuggingFace downloads during unit tests
-with patch("faster_whisper.WhisperModel", MagicMock()):
-    from app.main import app
+from app.main import app
 from app.models.driver import Driver
 from app.models.ambulance import Ambulance
 from app.models.ambulance_driver import AmbulanceDriver

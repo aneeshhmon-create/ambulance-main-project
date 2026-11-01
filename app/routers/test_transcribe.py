@@ -6,7 +6,7 @@ Temporary validation endpoint — Week 1 / Day 5 only.
 POST /test/transcribe
     • Accepts an audio file upload (mp3 / wav / m4a — any ffmpeg-decodable
       format works).
-    • Runs faster-whisper transcription.
+    • Runs Gemini transcription + translation.
     • Returns the raw transcript, detected language, and timing.
 
 Wire-up plan:
@@ -37,7 +37,7 @@ _ALLOWED_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".webm"}
     "/transcribe",
     summary="[TEST] Transcribe an audio file",
     description=(
-        "Upload an audio clip (mp3/wav/m4a) and receive the raw Whisper "
+        "Upload an audio clip (mp3/wav/m4a) and receive the raw Gemini "
         "transcript plus the auto-detected language. "
         "**Temporary endpoint — Day 5 accuracy validation only.**"
     ),
