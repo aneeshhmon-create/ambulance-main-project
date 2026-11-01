@@ -7,8 +7,9 @@ Pydantic v2 schemas shared by the Google sign-in flow for all three apps
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from app.schemas.ambulance import AmbulanceType
 from app.schemas.hospital import HospitalCreate
 
 Role = Literal["driver", "user", "hospital"]
@@ -34,6 +35,27 @@ class RegisterPersonRequest(BaseModel):
     registration_token: str
     name: str = Field(..., min_length=1, max_length=255)
     phone: str = Field(..., min_length=1, description="Raw phone number (spaces, dashes, +91, 0 accepted)")
+
+
+class RegisterDriverRequest(RegisterPersonRequest):
+    """
+    Body for POST /auth/register/driver.
+
+    The ambulance fields are optional so older app builds keep working (the
+    driver can add an ambulance later via POST /drivers/me/ambulances), but
+    when one is given both must be.
+    """
+    registration_number: Optional[str] = Field(None, max_length=50)
+    vehicle_type: Optional[AmbulanceType] = None
+
+    @model_validator(mode="after")
+    def _ambulance_fields_together(self) -> "RegisterDriverRequest":
+        has_number = bool(self.registration_number and self.registration_number.strip())
+        if has_number != (self.vehicle_type is not None):
+            raise ValueError(
+                "registration_number and vehicle_type must be provided together."
+            )
+        return self
 
 
 class RegisterHospitalRequest(BaseModel):

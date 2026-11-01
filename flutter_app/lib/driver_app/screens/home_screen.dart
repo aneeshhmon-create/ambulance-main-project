@@ -40,6 +40,7 @@ import 'package:ambulance_app/driver_app/services/auth_service.dart';
 import 'package:ambulance_app/driver_app/services/driver_api_service.dart';
 import 'package:ambulance_app/driver_app/screens/auth_page.dart';
 import 'package:ambulance_app/driver_app/screens/navigation_screen.dart';
+import 'package:ambulance_app/driver_app/widgets/ambulance_type_selector.dart';
 import 'package:ambulance_app/driver_app/widgets/home_footer.dart';
 import 'package:latlong2/latlong.dart' as ll2;
 
@@ -669,7 +670,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
                 ),
                 if (ambulance.vehicleType != null)
                   Text(
-                    ambulance.vehicleType!,
+                    AmbulanceTypes.shortLabel(ambulance.vehicleType),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: cs.onSurfaceVariant,
                     ),

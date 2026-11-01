@@ -182,11 +182,15 @@ class AuthService {
     required PendingDriverRegistration registration,
     required String name,
     required String phone,
+    String? registrationNumber,
+    String? vehicleType,
   }) async {
     final response = await _post('/auth/register/driver', {
       'registration_token': registration.registrationToken,
       'name': name,
       'phone': phone,
+      if (registrationNumber != null) 'registration_number': registrationNumber,
+      if (vehicleType != null) 'vehicle_type': vehicleType,
     });
     if (response.statusCode == 401) {
       throw NetworkException(_parseErrorDetail(response) ??
@@ -287,6 +291,46 @@ class AuthService {
     return list
         .map((e) => AmbulanceModel.fromJson(e as Map<String, dynamic>))
         .toList();
+  }
+
+  /// POST /drivers/me/ambulances — register an ambulance for the signed-in
+  /// driver. [vehicleType] is 'ALS', 'BLS' or 'ALS+BLS'.
+  static Future<AmbulanceModel> addAmbulance({
+    required String registrationNumber,
+    required String vehicleType,
+  }) async {
+    final jwt = await _storage.read(key: _kJwtKey);
+    if (jwt == null) throw const NetworkException('Not authenticated.');
+
+    http.Response response;
+    try {
+      response = await http
+          .post(
+            Uri.parse('${DriverApiConfig.baseUrl}/drivers/me/ambulances'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $jwt',
+            },
+            body: jsonEncode({
+              'registration_number': registrationNumber,
+              'vehicle_type': vehicleType,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+    } catch (e) {
+      throw NetworkException('Cannot reach server: $e');
+    }
+
+    if (response.statusCode == 401) {
+      await clearSession();
+      throw const NetworkException('Session expired. Please sign in again.');
+    }
+    if (response.statusCode != 201) {
+      throw ServerException(response.statusCode,
+          _parseErrorDetail(response) ?? 'Could not add this ambulance.');
+    }
+    return AmbulanceModel.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   // ── Session persistence ─────────────────────────────────────────────────────

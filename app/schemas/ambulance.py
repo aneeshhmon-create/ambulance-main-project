@@ -11,14 +11,24 @@ lives in the `drivers` table linked via `ambulance_driver`.
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.schemas.hospital import LocationSchema   # reuse the same sub-schema
 
 
+# ALS = Advanced Life Support, BLS = Basic Life Support, "ALS+BLS" = equipped for both.
+AmbulanceType = Literal["ALS", "BLS", "ALS+BLS"]
+
+
 # ── Request schemas ──────────────────────────────────────────────────────────
+
+class DriverAmbulanceCreate(BaseModel):
+    """Body accepted by POST /drivers/me/ambulances."""
+    registration_number: str = Field(..., min_length=1, max_length=50)
+    vehicle_type: AmbulanceType
+
 
 class AmbulanceCreate(BaseModel):
     """Body accepted by POST /ambulances."""
