@@ -1,0 +1,17 @@
+# Caddy obtains and renews Let's Encrypt certificates automatically.
+# API_HOST and DASH_HOST come from the environment (see .env.production).
+{$API_HOST} {
+	encode gzip
+	# Voice uploads are small clips; cap request bodies at 20 MB.
+	request_body {
+		max_size 20MB
+	}
+	reverse_proxy app:8000
+}
+
+{$DASH_HOST} {
+	encode gzip
+	root * /srv
+	try_files {path} /index.html
+	file_server
+}

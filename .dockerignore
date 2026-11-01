@@ -12,3 +12,13 @@ venv
 .vscode
 .idea
 *.log
+.env
+*.env
+.venv
+images
+report
+docs
+deploy
+*.ogg
+*.wav
+*.apk

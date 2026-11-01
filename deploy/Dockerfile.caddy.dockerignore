@@ -1,0 +1,13 @@
+.git
+.env
+*.env
+.venv
+app
+alembic
+flutter_app
+images
+report
+docs
+**/node_modules
+**/dist
+*.apk
