@@ -13,5 +13,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Uvicorn with live-reload for development; swap --reload for production
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+RUN useradd --create-home appuser && chown -R appuser /app
+USER appuser
+
+# Production default; docker-compose.yml overrides this with --reload for dev.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers", "--forwarded-allow-ips", "*"]

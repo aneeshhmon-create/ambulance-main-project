@@ -1,0 +1,15 @@
+# Builds the hospital dashboard and serves it with Caddy.
+# Build context: repository root.
+FROM node:20-alpine AS dashboard
+WORKDIR /build
+COPY hospital-dashboard/package.json hospital-dashboard/package-lock.json* ./
+RUN npm ci || npm install
+COPY hospital-dashboard/ ./
+ARG VITE_API_BASE_URL
+ARG VITE_GOOGLE_CLIENT_ID
+ARG VITE_ALLOW_DEV_LOGIN=false
+RUN npm run build
+
+FROM caddy:2-alpine
+COPY deploy/Caddyfile /etc/caddy/Caddyfile
+COPY --from=dashboard /build/dist /srv

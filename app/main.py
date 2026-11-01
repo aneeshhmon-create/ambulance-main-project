@@ -67,10 +67,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow all origins in development; tighten this for production.
+# All origins in development; elsewhere only those listed in CORS_ORIGINS.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.APP_ENV == "development" else [],
+    allow_origins=["*"] if settings.APP_ENV == "development" else settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -79,7 +79,7 @@ app.add_middleware(
 
 # ── Routers ──────────────────────────────────────────────────────────────────
 from app.routers import hospitals, ambulances, incidents, users
-from app.routers import test_transcribe  # ← Day-5 only; remove on Day 6
+from app.routers import test_transcribe  # validation-only; not mounted in production
 from app.routers import auth, drivers, tracking
 
 app.include_router(hospitals.router,     prefix="/hospitals",  tags=["Hospitals"])
@@ -87,7 +87,9 @@ app.include_router(ambulances.router,    prefix="/ambulances", tags=["Ambulances
 app.include_router(incidents.router,     prefix="/incidents",  tags=["Incidents"])
 app.include_router(tracking.router,      prefix="/incidents",  tags=["Incidents"])
 app.include_router(users.router,         prefix="/users",      tags=["Users"])
-app.include_router(test_transcribe.router, prefix="/test",     tags=["Test / Validation"])
+if settings.APP_ENV != "production":
+    # Unauthenticated and spends Gemini quota, so never expose it in production.
+    app.include_router(test_transcribe.router, prefix="/test", tags=["Test / Validation"])
 app.include_router(auth.router,          prefix="/auth",       tags=["Auth"])
 app.include_router(drivers.router,       prefix="/drivers",    tags=["Drivers"])
 

@@ -66,3 +66,4 @@ flutter_app/macos/Flutter/ephemeral/
 flutter_app/*.iml
 flutter_app/android/*.iml
 
+.env.production
