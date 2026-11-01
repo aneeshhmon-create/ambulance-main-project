@@ -1,168 +1,132 @@
 """
 app/services/stt_service.py
 ───────────────────────────
-Speech-to-text service powered by faster-whisper.
+Speech-to-text via Gemini (replaces the local Whisper pipeline).
 
-Design decisions
-────────────────
-• Model: "large-v3-turbo"
-    - Distilled from large-v3: ~6x faster than large-v3, ~same disk size as medium.
-    - Dramatically better Malayalam accuracy vs. medium (which has very limited
-      Dravidian language data and frequently hallucinates on Malayalam).
+Flow
+────
+1. transcribe_only():   audio -> Malayalam/English text   (gemini-3.5-transcribe,
+                        language hints ml-IN + en-IN, "smart" mode)
+2. translate_to_english(): text -> fluent English          (gemini-3.5-flash-lite)
 
-• beam_size=1 (greedy decoding):
-    - 3-5x faster than beam_size=5 on CPU with negligible accuracy loss.
+The audio is sent inline (base64), so there is no upload / delete round trip.
+Nothing runs locally: no GPU, ffmpeg or model download needed.
 
-• condition_on_previous_text=False:
-    - Prevents Whisper feeding its own hallucinated output back as context,
-      which caused 3-minute runaway transcriptions on Malayalam audio.
-
-• temperature=0:
-    - Deterministic, no sampling fallback. Faster.
-
-• vad_filter=True:
-    - Strips silence/noise from phone-call audio before inference.
-
-• Language strategy — post-transcription re-run:
-    - First pass: language=None (auto-detect).
-    - If auto-detect returns a non-allowed language (e.g. Tamil for a Malayalam
-      clip — a known large-v3-turbo false positive due to Dravidian acoustic
-      similarity), immediately re-run with language="ml" forced.
-    - This is more reliable than using detect_language() which has API
-      inconsistencies with certain audio formats in faster-whisper 1.x.
-    - Re-run only happens in the false-positive case (~1 extra pass, ~30s).
-    - Allowed languages for this domain: {"ml", "en"} — Kerala emergency dispatch.
-
-• Model loaded ONCE at module level — not per request.
-• GPU float16 if CUDA available, CPU int8 otherwise.
+Env overrides: GEMINI_TRANSCRIBE_MODEL, GEMINI_TRANSLATE_MODEL.
 """
 
+import base64
+import logging
 import os
 import time
-import logging
 
-from faster_whisper import WhisperModel
+from app.services.gemini_client import get_client
 
 logger = logging.getLogger(__name__)
 
+TRANSCRIBE_MODEL = os.environ.get("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe")
+TRANSLATE_MODEL = os.environ.get("GEMINI_TRANSLATE_MODEL", "gemini-3.5-flash-lite")
 
-# ── Model selection ───────────────────────────────────────────────────────────
-# Use locally downloaded full large-v3 model
-_LOCAL_MODEL_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "models", "large-v3")
-)
-_MODEL_SIZE = _LOCAL_MODEL_DIR if os.path.isdir(_LOCAL_MODEL_DIR) else "large-v3"
+_TRANSCRIBE_TIMEOUT_S = 30.0
+_TRANSLATE_TIMEOUT_S = 15.0
 
-# ── Device / precision ────────────────────────────────────────────────────────
-def _select_device_and_compute() -> tuple[str, str]:
-    try:
-        import torch
-        if torch.cuda.is_available():
-            logger.info("CUDA detected -- loading '%s' on GPU (float16).", _MODEL_SIZE)
-            return "cuda", "float16"
-    except ImportError:
-        pass
-    logger.info("No GPU -- loading '%s' on CPU (int8).", _MODEL_SIZE)
-    return "cpu", "int8"
-
-
-_device, _compute_type = _select_device_and_compute()
-
-# ── Lazy model load ──────────────────────────────────────────────────────────
-_model: WhisperModel | None = None
-
-def _get_model() -> WhisperModel:
-    global _model
-    if _model is None:
-        logger.info("Loading faster-whisper model '%s' ...", _MODEL_SIZE)
-        _model = WhisperModel(_MODEL_SIZE, device=_device, compute_type=_compute_type)
-        logger.info("faster-whisper model '%s' ready.", _MODEL_SIZE)
-    return _model
+# File extension -> mime type accepted by the interactions API.
+_MIME_BY_EXT = {
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/opus",
+    ".m4a": "audio/m4a",
+    ".mp4": "audio/m4a",
+    ".aac": "audio/aac",
+    ".mp3": "audio/mp3",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".webm": "audio/webm",
+}
 
 
-# ── Domain constraints ────────────────────────────────────────────────────────
-# Kerala emergency dispatch: callers only speak Malayalam or English.
-# Tamil detection = false positive (acoustic similarity). Always re-run as ml.
-_ALLOWED_LANGUAGES = frozenset({"ml", "en"})
+def _has_malayalam(text: str) -> bool:
+    return any("ഀ" <= ch <= "ൿ" for ch in text)
 
 
-# ── Shared transcribe call ────────────────────────────────────────────────────
-def _run_transcribe(file_path: str, language: str | None):
-    """Single transcribe call with consistent settings."""
-    model = _get_model()
-    segments, info = model.transcribe(
-        file_path,
-        language=language,
-        beam_size=1,                      # greedy: 3-5x faster on CPU
-        vad_filter=True,                  # strip silence / phone noise
-        condition_on_previous_text=False, # prevents hallucination loops
-        temperature=0,                    # deterministic, no sampling fallback
+def _transcribe_call(audio_b64: str, mime: str, language_codes: list[str]) -> str:
+    res = get_client().interactions.create(
+        model=TRANSCRIBE_MODEL,
+        input={"type": "audio", "data": audio_b64, "mime_type": mime},
+        generation_config={
+            "transcription_config": {"language_codes": language_codes, "mode": "smart"},
+        },
+        timeout=_TRANSCRIBE_TIMEOUT_S,
     )
-    transcript = " ".join(seg.text.strip() for seg in segments)
-    return transcript, info
+    return (res.output_text or "").strip()
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+def transcribe_only(file_path: str) -> dict:
+    """
+    Transcribe audio in its spoken language (Malayalam script for Malayalam).
+
+    Returns: {"original_transcript": str, "detected_language": "ml"|"en",
+              "duration_seconds": float}
+    """
+    t0 = time.perf_counter()
+    ext = os.path.splitext(file_path)[1].lower()
+    mime = _MIME_BY_EXT.get(ext, "audio/ogg")
+    with open(file_path, "rb") as fh:
+        audio_b64 = base64.b64encode(fh.read()).decode("ascii")
+
+    try:
+        text = _transcribe_call(audio_b64, mime, ["ml-IN", "en-IN"])
+    except Exception as exc:
+        # Some deployments may only accept a single language code.
+        logger.warning("[STT] ml-IN+en-IN failed (%s); retrying with ml-IN only.", exc)
+        text = _transcribe_call(audio_b64, mime, ["ml-IN"])
+
+    duration = round(time.perf_counter() - t0, 2)
+    lang = "ml" if _has_malayalam(text) else "en"
+    logger.info("[STT] Gemini transcription done in %.2fs (lang=%s)", duration, lang)
+    print(f"[STT] Gemini transcription took {duration}s (lang={lang})")
+    return {"original_transcript": text, "detected_language": lang, "duration_seconds": duration}
+
+
+def translate_to_english(text: str) -> str:
+    """Translate to English. Returns the input unchanged if it has no Malayalam or on failure."""
+    if not text or not _has_malayalam(text):
+        return text
+    t0 = time.perf_counter()
+    try:
+        res = get_client().interactions.create(
+            model=TRANSLATE_MODEL,
+            input=(
+                "You are a professional Malayalam-to-English translator.\n"
+                "Translate the following Malayalam text into fluent, natural English.\n"
+                "Keep the meaning accurate and preserve the tone.\n"
+                "Provide ONLY the English translation, nothing else.\n\n"
+                f"Malayalam text:\n{text}"
+            ),
+            generation_config={"temperature": 0.1, "thinking_level": "low"},
+            timeout=_TRANSLATE_TIMEOUT_S,
+        )
+        english = (res.output_text or "").strip()
+        logger.info("[STT] Translation done in %.2fs", time.perf_counter() - t0)
+        return english or text
+    except Exception as exc:
+        logger.warning("[STT] Translation failed (%s); keeping original transcript.", exc)
+        return text
+
+
 def transcribe_audio(file_path: str) -> dict:
     """
-    Transcribe an audio file and return the transcript plus detected language.
+    Transcribe + translate (sequential). Kept for the test endpoint / scripts.
 
-    Strategy
-    --------
-    1. Auto-detect language (language=None).
-    2. If Whisper picks a language outside {"ml", "en"} (e.g. Tamil as a false
-       positive for Malayalam), re-run immediately with language="ml" forced.
-       This adds ~30 s only in the rare false-positive case.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the audio file. Supports WAV, MP3, M4A, OGG, FLAC, and any
-        format ffmpeg can decode.
-
-    Returns
-    -------
-    dict
-        transcript        (str)   -- full transcribed text.
-        detected_language (str)   -- "ml" or "en" (corrected if needed).
-        duration_seconds  (float) -- wall-clock transcription time.
+    Returns: transcript (English), original_transcript, detected_language,
+             duration_seconds.
     """
-    t_start = time.perf_counter()
-    print(f"[STT] >> Transcription started  -- {time.strftime('%H:%M:%S')}")
-    logger.info("[STT] Starting transcription: %s", file_path)
-
-    # ── Pass 1: auto-detect ───────────────────────────────────────────────────
-    transcript, info = _run_transcribe(file_path, language=None)
-    final_language = info.language
-
-    # ── Pass 2 (if needed): re-run with forced Malayalam ─────────────────────
-    if info.language not in _ALLOWED_LANGUAGES:
-        logger.warning(
-            "[STT] Auto-detect chose '%s' (not in allowed set %s). "
-            "Re-running with language='ml'.",
-            info.language, set(_ALLOWED_LANGUAGES),
-        )
-        print(
-            f"[STT] [LANG OVERRIDE] '{info.language}' not allowed "
-            f"-- re-running as 'ml' (Kerala domain)"
-        )
-        transcript, info2 = _run_transcribe(file_path, language="ml")
-        final_language = "ml"
-
-    t_end = time.perf_counter()
-    duration = round(t_end - t_start, 2)
-
-    print(
-        f"[STT] [DONE] Transcription finished -- {time.strftime('%H:%M:%S')} "
-        f"(took {duration}s, lang: {final_language!r})"
-    )
-    logger.info(
-        "[STT] Done in %.2fs | language=%s | whisper_raw=%s",
-        duration, final_language, info.language,
-    )
-
+    t0 = time.perf_counter()
+    result = transcribe_only(file_path)
+    english = translate_to_english(result["original_transcript"])
     return {
-        "transcript": transcript,
-        "detected_language": final_language,
-        "duration_seconds": duration,
+        "transcript": english,
+        "original_transcript": result["original_transcript"],
+        "detected_language": result["detected_language"],
+        "duration_seconds": round(time.perf_counter() - t0, 2),
     }

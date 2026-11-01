@@ -8,20 +8,14 @@ python-dotenv==1.2.3
 pydantic-settings==2.15.0
 alembic==1.20.0
 
-# ── Speech-to-Text ────────────────────────────────────────────────────────────
-# faster-whisper: CTranslate2-based Whisper implementation.
-# 2-4× faster than openai-whisper on CPU, lower RAM, no PyTorch dependency.
-# Trade-off: uses a different Python API than openai-whisper, but for a plain
-# transcription service this is negligible. Preferred when GPU is not guaranteed.
-faster-whisper==1.1.1
-
-# ── LLM Extraction & Triage ──────────────────────────────────────────────────
-# Google Gemini API official SDK for extracting structured triage data
-google-genai==1.29.0
+# ── Speech-to-Text + LLM Extraction (all Gemini) ─────────────────────────────
+# google-genai 2.x provides the Interactions API used for transcription
+# (gemini-3.5-transcribe) and translation; also used for triage extraction.
+google-genai==2.30.0
 
 # ── Driver Authentication ─────────────────────────────────────────────────────
 # Google ID token verification (server-side, checks signature + audience)
-google-auth[requests]==2.40.3
+google-auth[requests]>=2.56.0,<3
 # JWT issuance for our own access tokens
 PyJWT==2.10.1
 
