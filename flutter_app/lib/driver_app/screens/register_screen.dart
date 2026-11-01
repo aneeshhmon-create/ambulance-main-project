@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:ambulance_app/driver_app/models/driver.dart';
 import 'package:ambulance_app/driver_app/services/auth_service.dart';
 import 'package:ambulance_app/driver_app/utils/validators.dart';
+import 'package:ambulance_app/driver_app/widgets/ambulance_type_selector.dart';
 
 class DriverRegisterScreen extends StatefulWidget {
   const DriverRegisterScreen({super.key, required this.registration});
@@ -23,6 +24,9 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameController;
   final _phoneController = TextEditingController();
+  final _plateController = TextEditingController();
+  String? _vehicleType;
+  bool _typeMissing = false;
 
   bool _isLoading = false;
   String? _errorMessage;
@@ -37,12 +41,15 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
   void dispose() {
     _nameController.dispose();
     _phoneController.dispose();
+    _plateController.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
     FocusScope.of(context).unfocus();
-    if (!_formKey.currentState!.validate()) return;
+    final formOk = _formKey.currentState!.validate();
+    setState(() => _typeMissing = _vehicleType == null);
+    if (!formOk || _vehicleType == null) return;
 
     setState(() {
       _isLoading = true;
@@ -54,6 +61,8 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
         registration: widget.registration,
         name: _nameController.text.trim(),
         phone: _phoneController.text.trim(),
+        registrationNumber: _plateController.text.trim(),
+        vehicleType: _vehicleType,
       );
       if (!mounted) return;
       Navigator.of(context).pop<DriverModel>(driver);
@@ -143,7 +152,7 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
                     controller: _phoneController,
                     enabled: !_isLoading,
                     keyboardType: TextInputType.phone,
-                    textInputAction: TextInputAction.done,
+                    textInputAction: TextInputAction.next,
                     decoration: const InputDecoration(
                       labelText: 'Mobile Number',
                       hintText: 'e.g. 9876543210 or +91 98765 43210',
@@ -151,7 +160,38 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
                       border: OutlineInputBorder(),
                     ),
                     validator: Validators.validatePhone,
-                    onFieldSubmitted: (_) => _submit(),
+                  ),
+                  const SizedBox(height: 28),
+                  Text(
+                    'Your ambulance',
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _plateController,
+                    enabled: !_isLoading,
+                    textInputAction: TextInputAction.done,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: const InputDecoration(
+                      labelText: 'Ambulance registration number',
+                      hintText: 'e.g. KL 07 AB 1234',
+                      prefixIcon: Icon(Icons.local_shipping_outlined),
+                      border: OutlineInputBorder(),
+                    ),
+                    validator: Validators.validateRegistrationNumber,
+                  ),
+                  const SizedBox(height: 16),
+                  AmbulanceTypeSelector(
+                    value: _vehicleType,
+                    enabled: !_isLoading,
+                    errorText: _typeMissing && _vehicleType == null
+                        ? 'Choose ALS, BLS or Both'
+                        : null,
+                    onChanged: (v) => setState(() {
+                      _vehicleType = v;
+                      _typeMissing = false;
+                    }),
                   ),
                   const SizedBox(height: 24),
                   if (_errorMessage != null) ...[

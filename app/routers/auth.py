@@ -30,6 +30,7 @@ POST /auth/dev-login   (only when ALLOW_DEV_LOGIN=true in .env)
 """
 
 import logging
+from typing import Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -48,6 +49,7 @@ from app.models.hospital import Hospital
 from app.models.hospital_account import HospitalAccount
 from app.models.user import User
 from app.routers.hospitals import _wkt_point
+from app.routers.drivers import add_ambulance_to_driver, normalize_registration_number
 from app.routers.users import normalize_phone
 from app.schemas.auth import (
     AccountOut,
@@ -55,6 +57,7 @@ from app.schemas.auth import (
     DevLoginRequest,
     GoogleProfile,
     GoogleTokenRequest,
+    RegisterDriverRequest,
     RegisterHospitalRequest,
     RegisterPersonRequest,
     Role,
@@ -225,7 +228,11 @@ def google_sign_in(body: GoogleTokenRequest, db: Session = Depends(get_db)):
 # ── POST /auth/register/* ─────────────────────────────────────────────────────
 
 def _register_person(
-    model, role: Role, body: RegisterPersonRequest, db: Session
+    model,
+    role: Role,
+    body: RegisterPersonRequest,
+    db: Session,
+    on_create: Optional[Callable[[object], None]] = None,
 ) -> AuthResponse:
     claims = decode_registration_token(body.registration_token, role)
     email: str = claims["email"]
@@ -266,6 +273,9 @@ def _register_person(
         )
         db.add(account)
     try:
+        if on_create is not None:
+            db.flush()  # assigns account.id for the callback
+            on_create(account)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -283,9 +293,26 @@ def _register_person(
     status_code=status.HTTP_201_CREATED,
     summary="Complete driver registration after Google sign-in",
 )
-def register_driver(body: RegisterPersonRequest, db: Session = Depends(get_db)):
-    """Create a driver from the registration token plus name and phone."""
-    return _register_person(Driver, "driver", body, db)
+def register_driver(body: RegisterDriverRequest, db: Session = Depends(get_db)):
+    """
+    Create a driver from the registration token plus name and phone, and, when
+    given, register their ambulance (registration number + ALS/BLS/ALS+BLS)
+    in the same transaction.
+    """
+    if body.registration_number is None:
+        return _register_person(Driver, "driver", body, db)
+
+    # Fail on a bad or taken number before anything is written.
+    normalize_registration_number(body.registration_number)
+    return _register_person(
+        Driver,
+        "driver",
+        body,
+        db,
+        on_create=lambda driver: add_ambulance_to_driver(
+            db, driver, body.registration_number, body.vehicle_type
+        ),
+    )
 
 
 @router.post(

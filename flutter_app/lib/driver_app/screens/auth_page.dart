@@ -3,8 +3,10 @@ import 'package:ambulance_app/driver_app/models/driver.dart';
 import 'package:ambulance_app/driver_app/services/auth_service.dart';
 import 'package:ambulance_app/driver_app/screens/home_screen.dart';
 import 'package:ambulance_app/driver_app/screens/navigation_screen.dart';
+import 'package:ambulance_app/driver_app/screens/add_ambulance_screen.dart';
 import 'package:ambulance_app/driver_app/screens/register_screen.dart';
 import 'package:ambulance_app/driver_app/services/driver_api_service.dart';
+import 'package:ambulance_app/driver_app/widgets/ambulance_type_selector.dart';
 
 enum AuthStage {
   loading,
@@ -137,6 +139,15 @@ class _AuthPageState extends State<AuthPage> {
         });
       }
     }
+  }
+
+  /// Registers an ambulance for a driver who has none, then reloads the list.
+  Future<void> _addAmbulance() async {
+    final added = await Navigator.of(context).push<AmbulanceModel>(
+      MaterialPageRoute(builder: (_) => const AddAmbulanceScreen()),
+    );
+    if (added == null || !mounted) return;
+    await _loadAmbulances();
   }
 
   Future<void> _loadAmbulances() async {
@@ -812,7 +823,7 @@ class _AuthPageState extends State<AuthPage> {
                               padding:
                                   const EdgeInsets.symmetric(horizontal: 24.0),
                               child: Text(
-                                'Your account has not been assigned to any ambulance yet. Please contact hospital dispatch.',
+                                'Register the ambulance you drive to start receiving incidents.',
                                 textAlign: TextAlign.center,
                                 style: theme.textTheme.bodySmall?.copyWith(
                                   color: theme.colorScheme.onSurfaceVariant,
@@ -820,7 +831,13 @@ class _AuthPageState extends State<AuthPage> {
                               ),
                             ),
                             const SizedBox(height: 20),
-                            OutlinedButton.icon(
+                            FilledButton.icon(
+                              icon: const Icon(Icons.add),
+                              label: const Text('Add ambulance'),
+                              onPressed: _addAmbulance,
+                            ),
+                            const SizedBox(height: 8),
+                            TextButton.icon(
                               icon: const Icon(Icons.refresh),
                               label: const Text('Refresh'),
                               onPressed: _loadAmbulances,
@@ -895,7 +912,7 @@ class _AuthPageState extends State<AuthPage> {
                                           ),
                                           const SizedBox(height: 2),
                                           Text(
-                                            'Type: ${ambulance.vehicleType ?? "Standard"}',
+                                            'Type: ${AmbulanceTypes.label(ambulance.vehicleType)}',
                                             style: theme.textTheme.bodySmall
                                                 ?.copyWith(
                                               color: theme.colorScheme

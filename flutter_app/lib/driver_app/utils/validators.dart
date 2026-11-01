@@ -36,4 +36,15 @@ class Validators {
     }
     return null;
   }
+
+  /// Plate-like: 4-15 letters/digits once spaces and hyphens are removed
+  /// (the server applies the same rule).
+  static String? validateRegistrationNumber(String? value) {
+    final compact = (value ?? '').toUpperCase().replaceAll(RegExp(r'[\s-]+'), '');
+    if (compact.isEmpty) return 'Registration number is required';
+    if (!RegExp(r'^[A-Z0-9]{4,15}$').hasMatch(compact)) {
+      return 'Enter a valid number, e.g. KL 07 AB 1234';
+    }
+    return null;
+  }
 }

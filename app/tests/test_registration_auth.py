@@ -258,3 +258,129 @@ class TestDevLoginRegistration:
         assert resp.status_code == 200
         assert resp.json()["registration_required"] is True
         assert resp.json()["google_profile"]["name"] == "someone"
+
+
+# ── Driver registration with an ambulance ─────────────────────────────────────
+
+def _driver_registration(client, email="crew@gmail.com", **extra):
+    token = _google_sign_in(client, email, "driver").json()["registration_token"]
+    return client.post(
+        "/auth/register/driver",
+        json={
+            "registration_token": token,
+            "name": "Ravi Kumar",
+            "phone": "9876543210",
+            **extra,
+        },
+    )
+
+
+class TestDriverAmbulanceRegistration:
+    @pytest.mark.parametrize("vtype", ["ALS", "BLS", "ALS+BLS"])
+    def test_registration_creates_and_links_ambulance(self, client, db, vtype):
+        reg = _driver_registration(
+            client, registration_number=" kl 07  ab 1234 ", vehicle_type=vtype
+        )
+        assert reg.status_code == 201
+
+        listing = client.get(
+            "/drivers/me/ambulances",
+            headers={"Authorization": f"Bearer {reg.json()['access_token']}"},
+        )
+        assert listing.status_code == 200
+        [amb] = listing.json()
+        assert amb["registration_number"] == "KL07AB1234"  # canonical form
+        assert amb["vehicle_type"] == vtype
+        assert db.query(AmbulanceDriver).count() == 1
+
+    def test_ambulance_is_optional_for_older_clients(self, client, db):
+        reg = _driver_registration(client)
+        assert reg.status_code == 201
+        assert db.query(Ambulance).count() == 0
+
+    def test_number_and_type_must_come_together(self, client, db):
+        assert _driver_registration(client, registration_number="KL07AB1234").status_code == 422
+        assert _driver_registration(client, vehicle_type="ALS").status_code == 422
+        assert db.query(Driver).count() == 0
+
+    def test_unknown_type_is_rejected(self, client, db):
+        res = _driver_registration(
+            client, registration_number="KL07AB1234", vehicle_type="ICU"
+        )
+        assert res.status_code == 422
+        assert db.query(Driver).count() == 0
+
+    def test_bad_registration_number_is_rejected(self, client, db):
+        res = _driver_registration(
+            client, registration_number="??", vehicle_type="ALS"
+        )
+        assert res.status_code == 422
+        assert db.query(Driver).count() == 0
+
+    def test_duplicate_number_conflicts_and_creates_no_driver(self, client, db):
+        assert _driver_registration(
+            client, "a@gmail.com", registration_number="KL07AB1234", vehicle_type="ALS"
+        ).status_code == 201
+        # Same plate written differently, by a different driver.
+        dup = _driver_registration(
+            client, "b@gmail.com", registration_number="kl 07-ab 1234", vehicle_type="BLS"
+        )
+        assert dup.status_code == 409
+        assert db.query(Driver).filter_by(email="b@gmail.com").count() == 0
+        assert db.query(Ambulance).count() == 1
+
+
+class TestAddAmbulanceForExistingDriver:
+    def _signed_in_driver(self, client):
+        reg = _driver_registration(client)
+        return {"Authorization": f"Bearer {reg.json()['access_token']}"}
+
+    def test_driver_without_ambulance_can_add_one(self, client, db):
+        headers = self._signed_in_driver(client)
+        assert client.get("/drivers/me/ambulances", headers=headers).json() == []
+
+        res = client.post(
+            "/drivers/me/ambulances",
+            headers=headers,
+            json={"registration_number": "KL 01 CD 5678", "vehicle_type": "ALS+BLS"},
+        )
+        assert res.status_code == 201
+        assert res.json()["vehicle_type"] == "ALS+BLS"
+        assert len(client.get("/drivers/me/ambulances", headers=headers).json()) == 1
+
+    def test_requires_authentication(self, client):
+        res = client.post(
+            "/drivers/me/ambulances",
+            json={"registration_number": "KL 01 CD 5678", "vehicle_type": "ALS"},
+        )
+        assert res.status_code in (401, 403)
+
+    def test_cannot_claim_someone_elses_ambulance(self, client, db):
+        owner = self._signed_in_driver(client)
+        client.post(
+            "/drivers/me/ambulances",
+            headers=owner,
+            json={"registration_number": "KL 01 CD 5678", "vehicle_type": "BLS"},
+        )
+        other_token = _google_sign_in(client, "other@gmail.com", "driver").json()["registration_token"]
+        other = client.post(
+            "/auth/register/driver",
+            json={"registration_token": other_token, "name": "Other", "phone": "9123456780"},
+        ).json()["access_token"]
+        res = client.post(
+            "/drivers/me/ambulances",
+            headers={"Authorization": f"Bearer {other}"},
+            json={"registration_number": "KL 01 CD 5678", "vehicle_type": "BLS"},
+        )
+        assert res.status_code == 409
+        assert db.query(AmbulanceDriver).count() == 1
+
+    def test_user_token_cannot_add_ambulance(self, client, db):
+        user = User(name="U", email="u@gmail.com", phone="9000000001")
+        db.add(user); db.commit()
+        res = client.post(
+            "/drivers/me/ambulances",
+            headers={"Authorization": f"Bearer {create_access_token(user.id, 'user')}"},
+            json={"registration_number": "KL 01 CD 5678", "vehicle_type": "ALS"},
+        )
+        assert res.status_code in (401, 403)
